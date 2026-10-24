@@ -97,6 +97,7 @@
     g.bounce = 0; g.squash = 0;
     g.finalTime = 0;
     g.resultsShown = false;
+    g.crashLog = [];
     g.spawnSame = 90; g.spawnOnc = 110;
     g.progress = 0;
     g.kmh = 0;
