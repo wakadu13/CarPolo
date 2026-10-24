@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cartoon car (side view, heading right) centred in the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Speed lines -->
+    <path
+        android:pathData="M22,50 L28,50 M21,56 L26,56"
+        android:strokeWidth="2.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- Ground shadow -->
+    <path
+        android:fillColor="#33000000"
+        android:pathData="M31,71.5 L81,71.5 A3,1.8 0 0,1 81,75.1 L31,75.1 A3,1.8 0 0,1 31,71.5 Z" />
+
+    <!-- Body -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,63 L30,56 Q30,52 34,51 L41.5,49.5 L48,41.5 Q50,39 53.5,39 L65,39 Q68.5,39 70.5,41.5 L76.5,49 L80.5,50 Q84,51 84,55 L84,63 Q84,65.5 81.5,65.5 L32.5,65.5 Q30,65.5 30,63 Z"
+        android:strokeWidth="3"
+        android:strokeColor="#FF16313F"
+        android:strokeLineJoin="round" />
+
+    <!-- Windows -->
+    <path
+        android:fillColor="#FF16313F"
+        android:pathData="M45.5,49 L50.6,43 Q51.6,42 53,42 L57,42 L57,49 Z M60,49 L60,42 L65,42 Q66.6,42 67.6,43.4 L72,49 Z" />
+
+    <!-- Turquoise stripe -->
+    <path
+        android:fillColor="#FF20C9C0"
+        android:pathData="M33,55.5 L81,55.5 L81,58.5 L33,58.5 Z" />
+
+    <!-- Headlight / rear light -->
+    <path
+        android:fillColor="#FFFFD23F"
+        android:pathData="M79.2,52.4 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0 Z" />
+    <path
+        android:fillColor="#FFFF5A4E"
+        android:pathData="M31,52.6 L33.6,52.2 L33.6,54.6 L31,54.6 Z" />
+
+    <!-- Wheels -->
+    <path
+        android:fillColor="#FF16313F"
+        android:pathData="M35,65.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z M65.4,65.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z" />
+    <path
+        android:fillColor="#FFDDE7EA"
+        android:pathData="M39,65.5 a2.8,2.8 0 1,0 5.6,0 a2.8,2.8 0 1,0 -5.6,0 Z M69.4,65.5 a2.8,2.8 0 1,0 5.6,0 a2.8,2.8 0 1,0 -5.6,0 Z" />
+</vector>

@@ -1,0 +1,17 @@
+# Local APK builds (tools/build-apk-local.sh)
+dist/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/.kotlin/
+android/local.properties
+android/captures/
+.gradle/
+*.iml
+.idea/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db

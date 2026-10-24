@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#20c9c0">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>CarPolo Turbo</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="c" aria-label="Jeu CarPolo"></canvas>
+
+<div id="ui">
+  <!-- Écran titre -->
+  <section id="scr-title" class="screen hidden">
+    <div class="card title-card">
+      <div class="title-left">
+        <h1 class="logo"><span class="l1">CAR</span><span class="l2">POLO</span></h1>
+        <p class="tagline">La C4 turquoise · Turbo en Provence</p>
+        <button id="btn-play" class="btn btn-go">▶ JOUER</button>
+        <div class="row">
+          <button id="btn-help" class="btn btn-small">Comment jouer ?</button>
+        </div>
+        <p id="t-best" class="best">Pas encore de record</p>
+        <div class="opts">
+          <label><input type="checkbox" id="opt-music"> Musique</label>
+          <label><input type="checkbox" id="opt-sfx"> Sons</label>
+          <label><input type="checkbox" id="opt-tilt"> Direction par inclinaison</label>
+        </div>
+      </div>
+      <div class="title-right">
+        <canvas id="t-map" class="map"></canvas>
+        <p class="route">De la <b>D15</b> (La Pécette) jusqu’à l’arrivée près de l’<b>A54</b>, par Cornillon-Confoux, Les Grandes Bastides, Lançon et l’<b>A7</b> · 12,6 km</p>
+      </div>
+    </div>
+    <p class="rotate-hint">↻ Tourne ton téléphone en paysage pour mieux jouer</p>
+  </section>
+
+  <!-- Aide -->
+  <section id="scr-help" class="screen hidden">
+    <div class="card help-card">
+      <h2>Comment jouer ?</h2>
+      <ul>
+        <li><b>But :</b> arriver le plus vite possible <b>sans accident</b>.</li>
+        <li><b>◀ ▶</b> à gauche pour tourner, <b>GAZ</b> et <b>FREIN</b> à droite.</li>
+        <li><b>Permis à points :</b> 12 points. Un accident coûte <b>3 points</b>, un flash radar <b>1 point</b> et +3 s. À 0 : permis annulé !</li>
+        <li>Les routes sont à double sens : pour doubler, vérifie qu’aucune voiture n’arrive en face.</li>
+        <li>Ramasse les <b>chevrons dorés</b> et <b>frôle</b> les voitures pour remplir le <b>TURBO</b> ⚡.</li>
+        <li>Le <b>klaxon</b> fait se ranger la voiture devant toi. Pouet pouet !</li>
+        <li><b>Départ canon :</b> appuie sur GAZ juste au dernier feu.</li>
+        <li>Radars à Cornillon, Lançon et sur l’A7 : ralentis aux panneaux, ou paie la note.</li>
+        <li>Clavier : flèches, Espace = turbo, K = klaxon, P = pause.</li>
+      </ul>
+      <button id="btn-help-back" class="btn btn-go">C’EST PARTI !</button>
+    </div>
+  </section>
+
+  <!-- Pause -->
+  <section id="scr-pause" class="screen hidden">
+    <div class="card small-card">
+      <h2>PAUSE</h2>
+      <button id="btn-resume" class="btn btn-go">▶ Reprendre</button>
+      <button id="btn-restart" class="btn btn-small">↺ Recommencer</button>
+      <button id="btn-quit" class="btn btn-small">⌂ Menu</button>
+    </div>
+  </section>
+
+  <!-- Résultats -->
+  <section id="scr-results" class="screen hidden">
+    <div class="card results-card">
+      <div class="res-left">
+        <h2 id="res-title" class="big-title">ARRIVÉE !</h2>
+        <p id="res-sub" class="sub"></p>
+        <div class="time-row">
+          <div id="res-medal" class="medal none">—</div>
+          <div>
+            <div id="res-time" class="res-time">0:00.00</div>
+            <div id="res-pen" class="pen"></div>
+          </div>
+        </div>
+        <p id="res-record" class="record hidden">★ NOUVEAU RECORD ! ★</p>
+        <p id="res-clean" class="clean hidden">🏅 Badge « Zéro accident »</p>
+        <p id="res-next" class="next"></p>
+      </div>
+      <div class="res-right">
+        <table class="stats">
+          <tr><td>Accidents</td><td id="st-crash">0</td></tr>
+          <tr><td>Voitures frôlées</td><td id="st-near">0</td></tr>
+          <tr><td>Chevrons dorés</td><td id="st-tok">0</td></tr>
+          <tr><td>Flashs radar</td><td id="st-flash">0</td></tr>
+          <tr><td>Permis</td><td id="st-pts">12 / 12</td></tr>
+        </table>
+        <button id="btn-again" class="btn btn-go">↺ REJOUER</button>
+        <button id="btn-menu" class="btn btn-small">⌂ Menu</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/track.js"></script>
+<script src="js/render.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

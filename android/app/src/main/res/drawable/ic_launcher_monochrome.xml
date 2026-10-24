@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon (Android 13+) silhouette: only alpha matters. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,63 L30,56 Q30,52 34,51 L41.5,49.5 L48,41.5 Q50,39 53.5,39 L65,39 Q68.5,39 70.5,41.5 L76.5,49 L80.5,50 Q84,51 84,55 L84,63 Q84,65.5 81.5,65.5 L32.5,65.5 Q30,65.5 30,63 Z M45.5,49 L57,49 L57,42 L53,42 Q51.6,42 50.6,43 Z M60,49 L72,49 L67.6,43.4 Q66.6,42 65,42 L60,42 Z"
+        android:fillType="evenOdd" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M35,65.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z M65.4,65.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z" />
+    <path
+        android:pathData="M22,50 L28,50 M21,56 L26,56"
+        android:strokeWidth="2.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+</vector>
