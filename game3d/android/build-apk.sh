@@ -14,6 +14,9 @@
 #   --javac-cp FILE      override the javac classpath only (e.g. Robolectric's android-all jar)
 #   --abis "LIST"        ABIs (default: "arm64-v8a armeabi-v7a")
 #   --out FILE           output APK (default: dist/CarPolo3D.apk at the repo root)
+#   --local              no NDK/SDK needed (Debian/Ubuntu): offline arm64 toolchain from
+#                        local-toolchain/setup.sh, Ubuntu aapt2/zipalign/apksigner/dx, framework-res
+#                        for aapt2 and Robolectric's android-all jar for javac. arm64-v8a only.
 # Env: KEYSTORE (default android/app/carpolo-dev.keystore), KS_PASS/KEY_ALIAS (carpolo),
 #      VERSION_CODE (default: git commit count), RAYLIB_SRC (local raylib 5.5 source → no download),
 #      BUILD_TYPE (Release).
@@ -31,6 +34,7 @@ AAPT_INCLUDE=""
 JAVAC_CP=""
 ABIS="${ABIS:-arm64-v8a armeabi-v7a}"
 OUT="$ROOT/dist/CarPolo3D.apk"
+LOCAL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --javac-cp) JAVAC_CP="$2"; shift 2 ;;
     --abis) ABIS="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
+    --local) LOCAL=1; shift ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -57,6 +62,37 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- --local defaults
+if [ "$LOCAL" = 1 ]; then
+  CACHE="${CARPOLO_CACHE:-$HOME/.cache/carpolo-build}"
+  if ! command -v aapt2 >/dev/null || ! command -v zipalign >/dev/null || ! command -v apksigner >/dev/null \
+     || [ ! -f /usr/share/java/com.android.dx.jar ] || [ ! -f /usr/share/android-framework-res/framework-res.apk ] \
+     || ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null; then
+    log "Installing build tools (apt)"
+    SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+    $SUDO apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq --no-install-recommends \
+      aapt zipalign apksigner dalvik-exchange android-framework-res clang lld llvm libegl-dev libgles-dev >/dev/null
+  fi
+  TC="$CACHE/ndk-local/android-arm64.cmake"
+  [ -f "$TC" ] || TC="$("$HERE/local-toolchain/setup.sh")"
+  TOOLCHAIN_FILE="${TOOLCHAIN_FILE:-$TC}"
+  ABIS="arm64-v8a"
+  AAPT_INCLUDE="${AAPT_INCLUDE:-/usr/share/android-framework-res/framework-res.apk}"
+  if [ -z "$JAVAC_CP" ]; then
+    v="16-robolectric-13921718"   # API 36 framework classes (javac only)
+    JAVAC_CP="$CACHE/android-all-$v.jar"
+    if [ ! -f "$JAVAC_CP" ]; then
+      log "Downloading Robolectric android-all $v (~200 MB, once) from Maven Central"
+      u="https://repo1.maven.org/maven2/org/robolectric/android-all/$v/android-all-$v.jar"
+      mkdir -p "$CACHE"
+      curl -fsSL --retry 3 -o "$JAVAC_CP.part" "$u"
+      [ "$(sha1sum "$JAVAC_CP.part" | cut -c1-40)" = "$(curl -fsSL "$u.sha1" | cut -c1-40)" ] || die "bad checksum for $u"
+      mv "$JAVAC_CP.part" "$JAVAC_CP"
+    fi
+  fi
+fi
 
 # ---------------------------------------------------------------- tools
 tool() {  # tool NAME -> path (build-tools dir first, then PATH)
