@@ -1,6 +1,6 @@
 # CarPolo 3D 🚙 — la C4 Cactus sur le vrai trajet
 
-Jeu de conduite en 3D écrit en **C avec raylib 5.5**, pour Android (APK) et PC (Linux).
+Jeu de conduite en 3D écrit en **C avec raylib 5.5**, pour Android (APK) et PC (Windows, macOS, Linux).
 Tu pilotes une **Citroën C4 Cactus phase 2 « Bleu Émeraude »** (modèle 3D fait sur mesure d'après les photos)
 sur le **vrai trajet** : 2000 chemin départemental 15 (La Pécette, Cornillon-Confoux) → Les Grandes Bastides →
 Lançon-Provence → route de Pélissanne → arrivée près de l'A54 (12,5 km).
@@ -43,7 +43,7 @@ L'APK est reconstruit automatiquement par GitHub Actions à chaque modification 
 - **Permis à 12 points** : chaque accident (voiture, arbre, mur, poteau, glissière) coûte 3 points. À 0 : permis annulé.
 - **Circulation réelle** : les autres voitures respectent les limitations du tracé (50 en agglomération, 30 dans
   les giratoires, 80/90 sur route) ; celles d'en face freinent et klaxonnent si tu es dans leur voie.
-- **Graphismes léger/normal** : réglage dans le menu pour les téléphones modestes.
+- **Graphismes léger/normal/élevé** : réglage dans le menu (léger pour les téléphones modestes).
 
 ## D'où viennent les données
 
