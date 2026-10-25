@@ -65,12 +65,13 @@ static Game G;
 static int testMode;
 static float testT;
 static int testStep;
+static bool testWrongLane;
 static void Autopilot(Input *in)
 {
     PlayerCar *c = &G.car;
     memset(in, 0, sizeof(*in));
     int idx = c->seg;
-    float target = LaneCenterD(idx, +1, 0);
+    float target = LaneCenterD(idx, testWrongLane && LaneCount(idx, -1) > 0 ? -1 : +1, 0);
     float err = target - c->d;
     float roadYaw = atan2f(W.route[idx].hz, W.route[idx].hx), hd = roadYaw - c->yaw;
     while (hd > PI) hd -= 2 * PI;
@@ -820,7 +821,9 @@ int GameRun(void)
                 else if (testStep == 21 && testT > 6.0f) { shot = true; shotName = "t_finish.png"; testStep = 17; testT = 0; }
                 else if (testStep == 17) { G.camMode = CAM_HOOD; StartRace(); testStep++; testT = 0; }
                 else if (testStep == 18 && testT > 9.0f) { shot = true; shotName = "t_hood.png"; testStep++; testT = 0; }
-                else if (testStep == 19) { G.camMode = CAM_CHASE; testStep++; }
+                else if (testStep == 19) { G.camMode = CAM_CHASE; testWrongLane = true; StartRace(); testStep = 22; testT = 0; }
+                else if (testStep == 22 && (G.crashed || testT > 40)) { shot = G.crashed; shotName = "t_crash.png"; TraceLog(LOG_INFO, "TEST: wrong-lane crash=%d after %.1fs points=%d", G.crashed, testT, G.points); testStep = 23; testT = 0; }
+                else if (testStep == 23 && testT > 3.0f) { shot = true; shotName = "t_respawn.png"; TraceLog(LOG_INFO, "TEST: after respawn crashed=%d invuln=%.1f", G.crashed, G.invuln); testWrongLane = false; testStep = 20; testT = 0; }
                 else if (testStep == 20 && testT > 0.5f) break;
                 break;
             }
