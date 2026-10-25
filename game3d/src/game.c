@@ -93,6 +93,45 @@ static void Autopilot(Input *in)
 #endif
 
 // ------------------------------------------------------------------ helpers
+#if !defined(PLATFORM_ANDROID)
+// GLFW is bundled inside raylib: used only to check, before raylib opens its window, that the
+// driver offers a 4x multisampled OpenGL 3.3 pixel format (some VMs / old drivers don't, and then
+// window creation would fail). Constants from GLFW 3.4's glfw3.h.
+typedef struct GLFWwindow GLFWwindow;
+int  glfwInit(void);
+void glfwTerminate(void);
+void glfwInitHint(int hint, int value);
+void glfwDefaultWindowHints(void);
+void glfwWindowHint(int hint, int value);
+GLFWwindow *glfwCreateWindow(int width, int height, const char *title, void *monitor, void *share);
+void glfwDestroyWindow(GLFWwindow *window);
+
+static bool ProbeMultisampling(void)
+{
+    const char *off = getenv("CARPOLO_NO_MSAA");
+    if (off && *off) return false;
+#if defined(__APPLE__)
+    glfwInitHint(0x00051001, 0);             // GLFW_COCOA_CHDIR_RESOURCES = false, as raylib does
+#endif
+    if (!glfwInit()) return false;
+    glfwDefaultWindowHints();
+    glfwWindowHint(0x00020004, 0);           // GLFW_VISIBLE = false
+    glfwWindowHint(0x0002100D, 4);           // GLFW_SAMPLES = 4
+    glfwWindowHint(0x00022002, 3);           // GLFW_CONTEXT_VERSION_MAJOR
+    glfwWindowHint(0x00022003, 3);           // GLFW_CONTEXT_VERSION_MINOR
+    glfwWindowHint(0x00022008, 0x00032001);  // GLFW_OPENGL_PROFILE = CORE
+#if defined(__APPLE__)
+    glfwWindowHint(0x00022006, 1);           // GLFW_OPENGL_FORWARD_COMPAT
+#endif
+    GLFWwindow *w = glfwCreateWindow(64, 64, "probe", NULL, NULL);
+    bool ok = w != NULL;
+    if (w) glfwDestroyWindow(w);
+    glfwTerminate();
+    return ok;
+}
+#endif
+
+
 static const char *AssetPath(const char *name)
 {
 #if defined(PLATFORM_ANDROID)
@@ -724,8 +763,19 @@ int GameRun(void)
 #if !defined(PLATFORM_ANDROID)
     testMode = getenv("CARPOLO_TEST") != NULL;
 #endif
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
+    unsigned int flags = FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE;
+#if defined(PLATFORM_ANDROID)
+    flags |= FLAG_MSAA_4X_HINT;
+#else
+    if (ProbeMultisampling()) flags |= FLAG_MSAA_4X_HINT;
+    else TraceLog(LOG_WARNING, "DISPLAY: 4x multisampling unavailable, antialiasing disabled");
+#endif
+    SetConfigFlags(flags);
     InitWindow(1280, 720, "CarPolo 3D");
+    if (!IsWindowReady()) {
+        TraceLog(LOG_ERROR, "DISPLAY: cannot open an OpenGL 3.3 window (graphics driver too old?)");
+        return 1;
+    }
 #if !defined(PLATFORM_ANDROID) && !defined(__APPLE__)
     {
         Image icon = LoadImage(AssetPath("icon.png"));
