@@ -10,15 +10,14 @@
 #include <math.h>
 #include <pthread.h>
 
-#define CORRIDOR      900.0f   // near terrain extends this far from the route
-#define NEAR_SUBDIV   70.0f    // cells closer than this are subdivided 2x2
+#define CORRIDOR      720.0f   // near terrain extends this far from the route
+#define NEAR_SUBDIV   50.0f    // cells closer than this are subdivided 2x2
 #define CONFORM_ZONE  45.0f    // terrain within this distance is conformed to the road
 #define SHOULDER      1.4f
 #define BLEND         14.0f
-#define LOAD_RADIUS   1750.0f
-#define DRAW_RADIUS   2300.0f
-#define TREE_NEAR     140.0f
-#define TREE_MID      420.0f
+// quality-dependent distances (SceneSetQuality)
+static float LOAD_RADIUS = 1200.0f, DRAW_RADIUS = 1450.0f, TREE_NEAR = 110.0f, TREE_MID = 300.0f, TREE_FAR = 560.0f;
+static int gQuality = 1;
 
 typedef struct { int road, a, b; } RoadPiece;
 
@@ -211,14 +210,14 @@ static void treePine(MeshBuf *b, Vector3 p, float h, unsigned seed, int lod)
         return;
     }
     // trunk as a 2-segment leaning prism
-    int sides = lod == 0 ? 5 : 3;
+    int sides = lod == 0 ? 4 : 3;
     for (int i = 0; i < sides; i++) {
         float a0 = 2 * PI * i / sides, a1 = 2 * PI * (i + 1) / sides, r0 = h * 0.03f, r1 = h * 0.018f;
         Vector3 b0 = { p.x + cosf(a0) * r0, p.y - 0.3f, p.z + sinf(a0) * r0 }, b1 = { p.x + cosf(a1) * r0, p.y - 0.3f, p.z + sinf(a1) * r0 };
         Vector3 t0 = { top.x + cosf(a0) * r1, top.y, top.z + sinf(a0) * r1 }, t1 = { top.x + cosf(a1) * r1, top.y, top.z + sinf(a1) * r1 };
         MB_Quad(b, b0, t0, t1, b1, bark);
     }
-    int puffs = lod == 0 ? 3 : 1;
+    int puffs = lod == 0 ? 2 : 1;
     for (int k = 0; k < puffs; k++) {
         float ox = (Rand01(&s) - 0.5f) * h * 0.35f, oz = (Rand01(&s) - 0.5f) * h * 0.35f, oy = (Rand01(&s) - 0.3f) * h * 0.08f;
         float rr = h * (puffs == 1 ? 0.34f : 0.24f + Rand01(&s) * 0.08f);
@@ -270,9 +269,9 @@ static void treePlane(MeshBuf *b, Vector3 p, float h, unsigned seed, int lod)
             }
         }
     }
-    int puffs = lod == 0 ? 4 : 1;
+    int puffs = lod == 0 ? 3 : 1;
     for (int k = 0; k < puffs; k++) {
-        float a = k * 1.7f + Rand01(&s) * 0.8f, rr = puffs == 1 ? h * 0.42f : h * (0.27f + Rand01(&s) * 0.06f);
+        float a = k * 2.1f + Rand01(&s) * 0.8f, rr = puffs == 1 ? h * 0.42f : h * (0.27f + Rand01(&s) * 0.06f);
         float off = puffs == 1 ? 0 : h * 0.17f;
         MB_Blob(b, (Vector3){ p.x + cosf(a) * off, p.y + h * 0.66f + Rand01(&s) * h * 0.08f, p.z + sinf(a) * off },
                 (Vector3){ rr, rr * 0.62f, rr }, lod == 0 ? 3 : 2, ColorJitter(leaf, seed + k, 14), 0.35f, seed + k * 13);
@@ -390,6 +389,7 @@ static void buildTerrain(Chunk *c, MeshBuf *t, MeshBuf *d)
             unsigned seed = Hash2(i * 7 + 3, j * 13 + 1);
             unsigned s = seed;
             int lod = cd < TREE_NEAR ? 0 : cd < TREE_MID ? 1 : 2;
+            if (lod == 2 && (cd > TREE_FAR || gQuality == 0)) continue;
             float clear = 0;
             if (cd < 40) {
                 // keep the road and its verges clear
@@ -405,9 +405,9 @@ static void buildTerrain(Chunk *c, MeshBuf *t, MeshBuf *d)
             Vector3 p = { px, groundC(c, px, pz, cd), pz };
             switch (cls) {
             case LC_FOREST:
-                if (lod == 2) { if (r3 < 0.45f) placeTree(c, d, r3 < 0.3f ? 2 : 0, p, seed, 2, cd); break; }
+                if (lod == 2) { if (r3 < 0.3f) placeTree(c, d, r3 < 0.2f ? 2 : 0, p, seed, 2, cd); break; }
                 placeTree(c, d, r3 < 0.65f ? 2 : 0, p, seed, lod, cd);
-                if (lod == 0 && Rand01(&s) < 0.45f) {
+                if (lod == 0 && Rand01(&s) < 0.25f) {
                     float qx = x0 + gcell * Rand01(&s), qz = z0 + gcell * Rand01(&s);
                     bush(d, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, 0.7f + Rand01(&s) * 0.6f, seed + 5, (Color){ 84, 98, 58, 255 });
                 }
@@ -769,7 +769,7 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
         MB_Quad(b, p1, p0, q0, q1, wall);   // outward for a positive-area polygon
         // windows and shutters on houses close to the road
         float ex = p1.x - p0.x, ez = p1.z - p0.z, L = sqrtf(ex * ex + ez * ez);
-        if (industrial || routeDist > 260 || L < 3.2f) continue;
+        if (industrial || routeDist > (gQuality ? 170 : 90) || L < 3.2f) continue;
         float nx = ez / L, nz = -ex / L;            // outward normal
         float ux = ex / L, uz = ez / L;
         int floors = (int)fmaxf(1, roundf(bd->height / 3.0f));
@@ -936,19 +936,19 @@ static void buildFar(void)
     const Grid *g = &W.far;
     if (!g->h) return;
     // split into tiles of at most 120x120 cells (non indexed)
-    int tile = 120;
+    int tile = 120, st = 2;   // every other sample (~300 m)
     for (int tj = 0; tj < g->nz - 1; tj += tile) {
         for (int ti = 0; ti < g->nx - 1; ti += tile) {
             if (nFar >= 16) break;
             MeshBuf b;
             MB_Init(&b, 6 * tile * tile);
-            for (int j = tj; j < tj + tile && j < g->nz - 1; j++) {
-                for (int i = ti; i < ti + tile && i < g->nx - 1; i++) {
+            for (int j = tj; j < tj + tile && j < g->nz - st; j += st) {
+                for (int i = ti; i < ti + tile && i < g->nx - st; i += st) {
                     Vector3 P[4];
                     Color C[4];
                     Vector3 N[4];
                     for (int q = 0; q < 4; q++) {
-                        int gi = i + (q & 1), gj = j + (q >> 1);
+                        int gi = i + (q & 1) * st, gj = j + (q >> 1) * st;
                         float x = g->x0 + gi * g->cell, z = g->z0 + gj * g->cell;
                         float y = g->h[gj * g->nx + gi] * 0.1f;
                         float cd = SceneRouteDist(x, z);
@@ -1196,6 +1196,17 @@ void SceneUpdate(Vector3 focus, int maxBuild)
     }
 }
 
+void SceneSetQuality(int q)
+{
+    gQuality = q;
+    if (q == 0) { LOAD_RADIUS = 850; DRAW_RADIUS = 1000; TREE_NEAR = 80; TREE_MID = 200; TREE_FAR = 0; }
+    else { LOAD_RADIUS = 1200; DRAW_RADIUS = 1450; TREE_NEAR = 110; TREE_MID = 300; TREE_FAR = 560; }
+    // rebuild everything with the new settings
+    for (int i = 0; i < nChunks; i++) if (chunks[i].built && i != jobChunk) unloadChunk(&chunks[i]);
+}
+
+int SceneQuality(void) { return gQuality; }
+
 float SceneProgress(Vector3 focus)
 {
     int want = 0, have = 0;
@@ -1214,7 +1225,7 @@ void SceneDraw(Camera3D cam)
     // far terrain with lighter fog so the hills show on the horizon
     RenderSetFog(1.0f / 5200.0f);
     for (int i = 0; i < nFar; i++) DrawMesh(farMesh[i], litMat, MatrixIdentity());
-    RenderSetFog(1.0f / 1500.0f);
+    RenderSetFog(gQuality ? 1.0f / 1150.0f : 1.0f / 850.0f);
     for (int i = 0; i < nChunks; i++) {
         Chunk *c = &chunks[i];
         if (!c->built) continue;
@@ -1237,6 +1248,24 @@ void SceneDraw(Camera3D cam)
         DrawMesh(c->road, litMat, MatrixIdentity());
     }
     RenderSetMat(MAT_MATTE);
+}
+
+void SceneStats(int *loaded, long *verts)
+{
+    int n = 0;
+    long v = 0;
+    for (int i = 0; i < nChunks; i++) {
+        if (!chunks[i].built) continue;
+        n++;
+        v += chunks[i].terrain.vertexCount + chunks[i].road.vertexCount + chunks[i].detail.vertexCount;
+    }
+    long vt = 0, vr = 0, vd = 0;
+    for (int i = 0; i < nChunks; i++) if (chunks[i].built) { vt += chunks[i].terrain.vertexCount; vr += chunks[i].road.vertexCount; vd += chunks[i].detail.vertexCount; }
+    long vf = 0;
+    for (int i = 0; i < nFar; i++) { v += farMesh[i].vertexCount; vf += farMesh[i].vertexCount; }
+    (void)vt; (void)vr; (void)vd; (void)vf;
+    *loaded = n;
+    *verts = v;
 }
 
 bool SceneCollide(float x, float z, float radius, Obstacle *hit)

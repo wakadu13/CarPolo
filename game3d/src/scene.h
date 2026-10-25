@@ -21,6 +21,9 @@ float SceneGround(float x, float z, int routeHint);
 // Corridor distance to the route (coarse, metres; large value outside the corridor)
 float SceneRouteDist(float x, float z);
 // Obstacles near (x,z) within 'radius': returns true and the obstacle hit
+void  SceneStats(int *loaded, long *verts);
+void  SceneSetQuality(int q);                 // 0 light, 1 normal
+int   SceneQuality(void);
 bool  SceneCollide(float x, float z, float radius, Obstacle *hit);
 
 #endif

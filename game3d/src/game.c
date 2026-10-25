@@ -44,6 +44,7 @@ typedef struct {
     float bestTime;
     bool newRecord;
     bool assist, sound;
+    int quality;
     int zone; float bannerT;
     char msg[64]; float msgT; Color msgCol;
     float goT;
@@ -113,11 +114,11 @@ static const char *SavePath(void)
 #endif
 }
 
-typedef struct { float best; int assist, sound, cam; } SaveData;
+typedef struct { float best; int assist, sound, cam, quality; } SaveData;
 
 static void LoadSave(void)
 {
-    G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE;
+    G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE; G.quality = 1;
     int size = 0;
     unsigned char *d = LoadFileData(SavePath(), &size);
     if (d && size == (int)sizeof(SaveData)) {
@@ -125,6 +126,7 @@ static void LoadSave(void)
         memcpy(&s, d, sizeof(s));
         G.bestTime = s.best; G.assist = s.assist; G.sound = s.sound;
         G.camMode = (CamMode)(s.cam >= 0 && s.cam < CAM_COUNT ? s.cam : 0);
+        G.quality = s.quality ? 1 : 0;
     }
     if (d) UnloadFileData(d);
 }
@@ -134,7 +136,7 @@ static void WriteSave(void)
 #if !defined(PLATFORM_ANDROID)
     if (testMode) return;
 #endif
-    SaveData s = { G.bestTime, G.assist, G.sound, (int)G.camMode };
+    SaveData s = { G.bestTime, G.assist, G.sound, (int)G.camMode, G.quality };
     SaveFileData(SavePath(), &s, sizeof(s));
 }
 
@@ -611,7 +613,8 @@ static void DrawTitle(void)
     y += 36 * u;
     if (UIButton((Rectangle){ cx - 110 * u, y, 220 * u, 30 * u }, G.assist ? "Aide à la direction : OUI" : "Aide à la direction : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.assist = !G.assist; WriteSave(); }
     y += 36 * u;
-    if (UIButton((Rectangle){ cx - 110 * u, y, 220 * u, 30 * u }, G.sound ? "Son : OUI" : "Son : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.sound = !G.sound; AudioSetEnabled(G.sound); WriteSave(); }
+    if (UIButton((Rectangle){ cx - 110 * u, y, 105 * u, 30 * u }, G.sound ? "Son : OUI" : "Son : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.sound = !G.sound; AudioSetEnabled(G.sound); WriteSave(); }
+    if (UIButton((Rectangle){ cx + 5 * u, y, 105 * u, 30 * u }, G.quality ? "Graph. : normal" : "Graph. : léger", (Color){ 74, 140, 220, 255 }, 13 * u)) { G.quality = !G.quality; SceneSetQuality(G.quality); WriteSave(); }
     y += 40 * u;
     Text(G.bestTime > 0 ? TextFormat("Record : %s", FmtTime(G.bestTime)) : "Pas encore de record", cx, y, 15 * u, (Color){ 176, 48, 106, 255 }, 1);
     float ms = fminf(H_ * 0.62f, W_ - (p.x + p.width) - 40 * u);
@@ -658,7 +661,7 @@ static void DrawResults(void)
 static void Draw3D(void)
 {
     BeginMode3D(G.cam);
-    RenderSetFrame(G.cam, 1.0f / 1500.0f);
+    RenderSetFrame(G.cam, SceneQuality() ? 1.0f / 1150.0f : 1.0f / 850.0f);
     SceneDraw(G.cam);
     SignsDraw(G.cam);
     TrafficDraw(G.cam);
@@ -710,6 +713,7 @@ int GameRun(void)
     RenderInit();
     CarInitShared();
     SceneInit();
+    SceneSetQuality(G.quality);
     SignsInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();
     G.cactusReady = true;
@@ -810,7 +814,7 @@ int GameRun(void)
                     int k = (testStep - 5) / 2;
                     if ((testStep - 5) % 2 == 0) {
                         if (k < 5) { CarReset(&G.car, tp[k], LaneCenterD(RouteIndexAtS(tp[k]), 1, 0)); G.car.speed = 15; TrafficReset(tp[k]); G.camPos = G.car.pos; testStep++; testT = 0; }
-                    } else if (testT > 3.5f) { static char nm[32]; snprintf(nm, sizeof(nm), "t_place%d.png", k); shot = true; shotName = nm; testStep++; testT = 0; }
+                    } else if (testT > 3.5f) { int nl; long nv; SceneStats(&nl, &nv); TraceLog(LOG_INFO, "TEST: chunks loaded %d, vertices %ld (%.1f MB GPU)", nl, nv, nv * 36.0 / 1e6); static char nm[32]; snprintf(nm, sizeof(nm), "t_place%d.png", k); shot = true; shotName = nm; testStep++; testT = 0; }
                 } else if (testStep == 15) { CarReset(&G.car, W.length - 75, LaneCenterD(W.nRoute - 2, 1, 0)); G.car.speed = 14; testStep++; testT = 0; }
                 else if (testStep == 16 && testT > 2.6f) { shot = true; shotName = "t_arrival.png"; testStep = 21; testT = 0; }
                 else if (testStep == 21 && testT > 6.0f) { shot = true; shotName = "t_finish.png"; testStep = 17; testT = 0; }
