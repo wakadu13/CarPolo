@@ -94,9 +94,10 @@ static void Autopilot(Input *in)
 
 // ------------------------------------------------------------------ helpers
 #if !defined(PLATFORM_ANDROID)
-// GLFW is bundled inside raylib: used only to check, before raylib opens its window, that the
-// driver offers a 4x multisampled OpenGL 3.3 pixel format (some VMs / old drivers don't, and then
-// window creation would fail). Constants from GLFW 3.4's glfw3.h.
+// GLFW is bundled inside raylib. It is used here only to check, with small invisible windows, which
+// OpenGL 3.3 setup the graphics driver accepts before raylib opens the real window: raylib 5.5 crashes
+// when window creation fails (some VMs, very old drivers, or a missing 4x multisampling format on
+// some Macs). Constants from GLFW 3.4's glfw3.h.
 typedef struct GLFWwindow GLFWwindow;
 int  glfwInit(void);
 void glfwTerminate(void);
@@ -105,29 +106,54 @@ void glfwDefaultWindowHints(void);
 void glfwWindowHint(int hint, int value);
 GLFWwindow *glfwCreateWindow(int width, int height, const char *title, void *monitor, void *share);
 void glfwDestroyWindow(GLFWwindow *window);
+#if defined(_WIN32)
+__declspec(dllimport) int __stdcall MessageBoxA(void *hWnd, const char *text, const char *caption, unsigned int type);
+#endif
 
-static bool ProbeMultisampling(void)
+// 2 = OpenGL 3.3 with 4x MSAA, 1 = OpenGL 3.3 without MSAA, 0 = no usable OpenGL 3.3.
+static int ProbeOpenGL(void)
 {
-    const char *off = getenv("CARPOLO_NO_MSAA");
-    if (off && *off) return false;
 #if defined(__APPLE__)
     glfwInitHint(0x00051001, 0);             // GLFW_COCOA_CHDIR_RESOURCES = false, as raylib does
 #endif
-    if (!glfwInit()) return false;
-    glfwDefaultWindowHints();
-    glfwWindowHint(0x00020004, 0);           // GLFW_VISIBLE = false
-    glfwWindowHint(0x0002100D, 4);           // GLFW_SAMPLES = 4
-    glfwWindowHint(0x00022002, 3);           // GLFW_CONTEXT_VERSION_MAJOR
-    glfwWindowHint(0x00022003, 3);           // GLFW_CONTEXT_VERSION_MINOR
-    glfwWindowHint(0x00022008, 0x00032001);  // GLFW_OPENGL_PROFILE = CORE
+    if (!glfwInit()) return 0;
+    const char *noMsaa = getenv("CARPOLO_NO_MSAA");
+    int level = 0;
+    for (int samples = (noMsaa && *noMsaa) ? 0 : 4; samples >= 0 && level == 0; samples -= 4) {
+        glfwDefaultWindowHints();
+        glfwWindowHint(0x00020004, 0);           // GLFW_VISIBLE = false
+        glfwWindowHint(0x0002100D, samples);     // GLFW_SAMPLES
+        glfwWindowHint(0x00022002, 3);           // GLFW_CONTEXT_VERSION_MAJOR
+        glfwWindowHint(0x00022003, 3);           // GLFW_CONTEXT_VERSION_MINOR
+        glfwWindowHint(0x00022008, 0x00032001);  // GLFW_OPENGL_PROFILE = CORE
 #if defined(__APPLE__)
-    glfwWindowHint(0x00022006, 1);           // GLFW_OPENGL_FORWARD_COMPAT
+        glfwWindowHint(0x00022006, 1);           // GLFW_OPENGL_FORWARD_COMPAT
 #endif
-    GLFWwindow *w = glfwCreateWindow(64, 64, "probe", NULL, NULL);
-    bool ok = w != NULL;
-    if (w) glfwDestroyWindow(w);
+        GLFWwindow *w = glfwCreateWindow(64, 64, "probe", NULL, NULL);
+        if (w) { glfwDestroyWindow(w); level = samples ? 2 : 1; }
+    }
     glfwTerminate();
-    return ok;
+    return level;
+}
+
+static void ShowNoOpenGLMessage(void)
+{
+    const char *msg = "CarPolo 3D a besoin d'une carte graphique compatible OpenGL 3.3. "
+                      "Mets a jour le pilote graphique de l'ordinateur, puis relance le jeu.";
+    TraceLog(LOG_ERROR, "DISPLAY: no usable OpenGL 3.3 window (graphics driver too old, or no GPU)");
+    if (testMode) return;                    // never block an automated run on a dialog
+#if defined(_WIN32)
+    MessageBoxA(NULL, msg, "CarPolo 3D", 0x10);  // MB_ICONERROR
+#elif defined(__APPLE__)
+    if (system("osascript -e 'display alert \"CarPolo 3D\" message \"CarPolo 3D a besoin d’une carte graphique "
+           "compatible OpenGL 3.3.\" as critical' >/dev/null 2>&1")) {}
+#else
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "(zenity --error --title='CarPolo 3D' --text=\"%s\" || "
+             "kdialog --title 'CarPolo 3D' --error \"%s\") >/dev/null 2>&1", msg, msg);
+    if (system(cmd)) {}
+#endif
+    (void)msg;
 }
 #endif
 
@@ -767,7 +793,9 @@ int GameRun(void)
 #if defined(PLATFORM_ANDROID)
     flags |= FLAG_MSAA_4X_HINT;
 #else
-    if (ProbeMultisampling()) flags |= FLAG_MSAA_4X_HINT;
+    int gl = ProbeOpenGL();
+    if (gl == 0) { ShowNoOpenGLMessage(); return 1; }
+    if (gl == 2) flags |= FLAG_MSAA_4X_HINT;
     else TraceLog(LOG_WARNING, "DISPLAY: 4x multisampling unavailable, antialiasing disabled");
 #endif
     SetConfigFlags(flags);

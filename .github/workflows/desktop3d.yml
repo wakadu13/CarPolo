@@ -105,19 +105,6 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           cmake --build build -j4
           lipo -info game3d/build-bin/carpolo3d
-      - name: Smoke test (best effort)
-        continue-on-error: true
-        run: |
-          set +e
-          mkdir -p smoke && cd smoke
-          CARPOLO_TEST=1 ../game3d/build-bin/carpolo3d > log.txt 2>&1 &
-          pid=$!
-          for i in $(seq 1 180); do sleep 5; grep -q "TEST: done" log.txt && break; kill -0 $pid 2>/dev/null || break; done
-          if kill -0 $pid 2>/dev/null; then kill $pid; status=running; else wait $pid; status="exit $?"; fi
-          grep -E "TEST:|ERROR|GL:|WORLD:" log.txt | head -30 || true
-          diag=$(grep -E "GLFW|DISPLAY|Renderer|Version|WARNING|ERROR|TEST|SCENE|FONT: Data|abort|signal|Segmentation" log.txt | head -14 | tr '\n' '|' | tr -d '%' | cut -c1-900)
-          last=$(tail -6 log.txt | tr '\n' '|' | tr -d '%' | cut -c1-500)
-          if grep -q "TEST: done" log.txt; then echo "::notice title=macOS smoke test::$(grep 'TEST: done' log.txt | sed 's/.*TEST: //') -- $diag"; else echo "::warning title=macOS smoke test::did not complete ($status, $(wc -l < log.txt) log lines) -- $diag -- LAST: $last"; tail -20 log.txt; fi
       - name: Package (.app, ad-hoc signed)
         run: BUILD_NUMBER=$(git rev-list --count HEAD) game3d/desktop/package.sh macos game3d/build-bin/carpolo3d dist
       - uses: actions/upload-artifact@v4
@@ -125,6 +112,40 @@ jobs:
           name: CarPolo3D-macos
           path: dist/CarPolo3D-macos.zip
           if-no-files-found: error
+      # GitHub's Mac runners have no GPU, and GLFW only accepts a hardware OpenGL renderer, so the
+      # released app cannot draw here. It must at least start from its bundle and exit cleanly.
+      - name: Start-up check of the packaged app
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p appcheck && cd appcheck && ditto -x -k ../dist/CarPolo3D-macos.zip .
+          CARPOLO_TEST=1 "CarPolo 3D.app/Contents/MacOS/carpolo3d" > log.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 180); do sleep 5; grep -q "TEST: done" log.txt && break; kill -0 $pid 2>/dev/null || break; done
+          if kill -0 $pid 2>/dev/null; then kill $pid; status=running; else wait $pid; status="exit $?"; fi
+          cat log.txt | head -40
+          if grep -q "TEST: done" log.txt; then echo "::notice title=macOS packaged app::full test run: $(grep 'TEST: done' log.txt | sed 's/.*TEST: //')"
+          elif [ "$status" = "exit 1" ] && grep -q "no usable OpenGL" log.txt; then echo "::notice title=macOS packaged app::starts from its bundle and exits cleanly without a GPU (exit 1)"
+          else echo "::warning title=macOS packaged app::unexpected ($status) -- $(grep -E 'GLFW|DISPLAY|ERROR|WARNING' log.txt | head -8 | tr '\n' '|' | tr -d '%' | cut -c1-700)"; fi
+      # Test-only build that lets GLFW use Apple's software OpenGL renderer, to run the autopilot
+      # (world loading, streaming, rendering, screenshots) on macOS. Not shipped.
+      - name: Smoke test on Apple's software OpenGL (test-only build)
+        continue-on-error: true
+        run: |
+          set +e
+          cmake -S game3d -B build-sw -DCMAKE_BUILD_TYPE=Release > /dev/null
+          nsgl=build-sw/_deps/raylib-src/src/external/glfw/src/nsgl_context.m
+          perl -pi -e 's/^\s*ADD_ATTRIB\(NSOpenGLPFAAccelerated\);\s*$//' "$nsgl"
+          if grep -q "ADD_ATTRIB(NSOpenGLPFAAccelerated)" "$nsgl"; then echo "::warning title=macOS smoke test::could not patch GLFW"; exit 0; fi
+          if ! cmake --build build-sw -j4 > build-sw.log 2>&1; then tail -30 build-sw.log; echo "::warning title=macOS smoke test::test build failed"; exit 0; fi
+          mkdir -p smoke && cd smoke
+          CARPOLO_TEST=1 ../game3d/build-bin/carpolo3d > log.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 240); do sleep 5; grep -q "TEST: done" log.txt && break; kill -0 $pid 2>/dev/null || break; done
+          if kill -0 $pid 2>/dev/null; then kill $pid; status=running; else wait $pid; status="exit $?"; fi
+          grep -E "TEST:|ERROR|GL:|WORLD:" log.txt | head -30
+          diag=$(grep -E "Renderer|Version|multisampling|ERROR|SCENE|abort|signal|Segmentation" log.txt | head -8 | tr '\n' '|' | tr -d '%' | cut -c1-700)
+          if grep -q "TEST: done" log.txt; then echo "::notice title=macOS smoke test (software OpenGL)::$(grep 'TEST: done' log.txt | sed 's/.*TEST: //') -- $diag"; else echo "::warning title=macOS smoke test (software OpenGL)::did not complete ($status, $(wc -l < log.txt) log lines) -- $diag -- LAST: $(tail -6 log.txt | tr '\n' '|' | tr -d '%' | cut -c1-500)"; tail -20 log.txt; fi
       - uses: actions/upload-artifact@v4
         with:
           name: captures-macos
