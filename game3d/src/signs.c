@@ -44,7 +44,7 @@ static Mesh makeBoard(void)
 
 static Texture2D townTexture(Font font, bool fontOk, const char *name, bool exitSign)
 {
-    int W_ = 512, H_ = 200;
+    int W_ = 512, H_ = 256;   // power of two (GLES2 mipmaps)
     Image im = GenImageColor(W_, H_, (Color){ 214, 30, 36, 255 });
     ImageDrawRectangle(&im, 14, 14, W_ - 28, H_ - 28, WHITE);
     ImageDrawRectangle(&im, 0, 0, W_, 4, (Color){ 120, 120, 120, 255 });
@@ -59,7 +59,7 @@ static Texture2D townTexture(Font font, bool fontOk, const char *name, bool exit
     for (int i = 0; up[i] && up[i + 1]; i++) {
         if ((unsigned char)up[i] == 0xC3 && (unsigned char)up[i + 1] >= 0xA0 && (unsigned char)up[i + 1] <= 0xBE) { up[i + 1] = (char)((unsigned char)up[i + 1] - 0x20); i++; }
     }
-    float fs = 64;
+    float fs = 72;
     if (fontOk) {
         Vector2 m = MeasureTextEx(font, up, fs, 1);
         while (m.x > W_ - 60 && fs > 24) { fs -= 2; m = MeasureTextEx(font, up, fs, 1); }
@@ -143,8 +143,8 @@ void SignsInit(Font font, bool fontOk)
             const char *name = WorldStr(pid);
             if (name[0] && s0 - lastEntry > 600 && nSigns + 2 < MAX_SIGNS - 4) {
                 Texture2D tin = townTexture(font, fontOk, name, false), tout = townTexture(font, fontOk, name, true);
-                if (s0 > 30) addSign(&posts, tin, s0, 1, 1.9f, 0.74f, 1.3f);
-                if (s1 < W.length - 30) addSign(&posts, tout, s1, 1, 1.9f, 0.74f, 1.3f);
+                if (s0 > 30) addSign(&posts, tin, s0, 1, 1.7f, 0.85f, 1.2f);
+                if (s1 < W.length - 30) addSign(&posts, tout, s1, 1, 1.7f, 0.85f, 1.2f);
                 lastEntry = s0;
             }
         }
