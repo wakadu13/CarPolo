@@ -7,6 +7,19 @@ Lançon-Provence → route de Pélissanne → arrivée près de l'A54 (12,5 km).
 
 But : arriver **le plus vite possible sans accident**.
 
+## Télécharger pour PC (Windows, macOS, Linux)
+
+Release `desktop3d-latest`, reconstruite automatiquement par GitHub Actions :
+
+| Système | Fichier |
+|---|---|
+| Windows 10/11 64 bits | [CarPolo3D-windows-x64.zip](https://github.com/wakadu13/CarPolo/releases/download/desktop3d-latest/CarPolo3D-windows-x64.zip) — décompresser, lancer `CarPolo3D.exe` (SmartScreen : « Informations complémentaires » → « Exécuter quand même ») |
+| macOS 11+ (Apple Silicon et Intel) | [CarPolo3D-macos.zip](https://github.com/wakadu13/CarPolo/releases/download/desktop3d-latest/CarPolo3D-macos.zip) — glisser « CarPolo 3D.app » dans Applications, puis clic droit → Ouvrir (app non notarisée) |
+| Linux 64 bits | [CarPolo3D-linux-x64.tar.gz](https://github.com/wakadu13/CarPolo/releases/download/desktop3d-latest/CarPolo3D-linux-x64.tar.gz) — `tar xzf …` puis `./CarPolo3D/carpolo3d` |
+
+Sur PC : clavier (flèches/ZQSD/WASD, H, C, P, **F11 plein écran**) ou manette ; graphismes « élevé » par défaut.
+Le record est enregistré dans le dossier utilisateur (`%APPDATA%\CarPolo3D`, `~/Library/Application Support/CarPolo3D`, `~/.local/share/carpolo3d`).
+
 ## Installer sur Android
 
 Télécharge **CarPolo3D.apk** sur le téléphone :
@@ -46,11 +59,13 @@ de base ont été prises à la source (`tools/world/`, voir son README) :
 
 ## Compiler
 
-PC (Linux) :
+PC (Linux, macOS, Windows avec MinGW ou MSVC) :
 ```sh
-cmake -S game3d -B game3d/build                      # récupère raylib 5.5 automatiquement
+cmake -S game3d -B game3d/build -DCMAKE_BUILD_TYPE=Release   # récupère raylib 5.5 automatiquement
 cmake --build game3d/build -j && ./game3d/build-bin/carpolo3d
 ```
+Windows depuis Linux : `-DCMAKE_TOOLCHAIN_FILE=game3d/desktop/mingw-w64-x86_64.cmake` (paquet `mingw-w64`).
+Archives joueurs : `game3d/desktop/package.sh windows|linux|macos <exécutable> <dossier>` (voir `.github/workflows/desktop3d.yml`).
 Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/build-apk.sh` avec un NDK).
 
 ## Organisation du code (`src/`)

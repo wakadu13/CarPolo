@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <pthread.h>
+#include "thread.h"
 
 #define CORRIDOR      720.0f   // near terrain extends this far from the route
 #define NEAR_SUBDIV   50.0f    // cells closer than this are subdivided 2x2
@@ -769,7 +769,7 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
         MB_Quad(b, p1, p0, q0, q1, wall);   // outward for a positive-area polygon
         // windows and shutters on houses close to the road
         float ex = p1.x - p0.x, ez = p1.z - p0.z, L = sqrtf(ex * ex + ez * ez);
-        if (industrial || routeDist > (gQuality ? 170 : 90) || L < 3.2f) continue;
+        if (industrial || routeDist > (gQuality == 2 ? 260 : gQuality ? 170 : 90) || L < 3.2f) continue;
         float nx = ez / L, nz = -ex / L;            // outward normal
         float ux = ex / L, uz = ez / L;
         int floors = (int)fmaxf(1, roundf(bd->height / 3.0f));
@@ -896,9 +896,8 @@ static void buildChunk(Chunk *c)
 }
 
 // ---- background builder thread
-static pthread_t worker;
-static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t cvar = PTHREAD_COND_INITIALIZER;
+static cp_thread *worker;
+static cp_lock *lk;
 static volatile int jobChunk = -1;
 static volatile bool jobDone, workerQuit, workerOn;
 static MeshBuf jobT, jobR, jobD;
@@ -907,15 +906,15 @@ static void *workerMain(void *arg)
 {
     (void)arg;
     for (;;) {
-        pthread_mutex_lock(&mtx);
-        while (!workerQuit && (jobChunk < 0 || jobDone)) pthread_cond_wait(&cvar, &mtx);
-        if (workerQuit) { pthread_mutex_unlock(&mtx); break; }
+        cp_lock_acquire(lk);
+        while (!workerQuit && (jobChunk < 0 || jobDone)) cp_lock_wait(lk);
+        if (workerQuit) { cp_lock_release(lk); break; }
         int id = jobChunk;
-        pthread_mutex_unlock(&mtx);
+        cp_lock_release(lk);
         buildChunkCPU(&chunks[id], &jobT, &jobR, &jobD);
-        pthread_mutex_lock(&mtx);
+        cp_lock_acquire(lk);
         jobDone = true;
-        pthread_mutex_unlock(&mtx);
+        cp_lock_release(lk);
     }
     return NULL;
 }
@@ -1110,18 +1109,21 @@ void SceneInit(void)
     }
     buildFar();
     jobChunk = -1; jobDone = false; workerQuit = false;
-    workerOn = pthread_create(&worker, NULL, workerMain, NULL) == 0;
+    if (!lk) lk = cp_lock_create();
+    worker = lk ? cp_thread_create(workerMain, NULL) : NULL;
+    workerOn = worker != NULL;
     TraceLog(LOG_INFO, "SCENE: %d chunks, %d side-road pieces, %d far tiles, async builder %s", nChunks, nPieces, nFar, workerOn ? "on" : "off");
 }
 
 void SceneShutdown(void)
 {
     if (workerOn) {
-        pthread_mutex_lock(&mtx);
+        cp_lock_acquire(lk);
         workerQuit = true;
-        pthread_cond_broadcast(&cvar);
-        pthread_mutex_unlock(&mtx);
-        pthread_join(worker, NULL);
+        cp_lock_broadcast(lk);
+        cp_lock_release(lk);
+        cp_thread_join(worker);
+        worker = NULL;
         workerOn = false;
         if (jobChunk >= 0 && jobDone) { MB_Free(&jobT); MB_Free(&jobR); MB_Free(&jobD); }
         jobChunk = -1; jobDone = false;
@@ -1166,24 +1168,24 @@ void SceneUpdate(Vector3 focus, int maxBuild)
     }
     // finished background job -> upload
     if (workerOn && jobChunk >= 0) {
-        pthread_mutex_lock(&mtx);
+        cp_lock_acquire(lk);
         bool done = jobDone;
-        pthread_mutex_unlock(&mtx);
+        cp_lock_release(lk);
         if (done) {
             uploadChunk(&chunks[jobChunk], &jobT, &jobR, &jobD);
-            pthread_mutex_lock(&mtx);
+            cp_lock_acquire(lk);
             jobChunk = -1; jobDone = false;
-            pthread_mutex_unlock(&mtx);
+            cp_lock_release(lk);
         }
     }
     if (maxBuild < 0 && workerOn) {
         if (jobChunk < 0) {
             int next = pickNext(focus);
             if (next >= 0) {
-                pthread_mutex_lock(&mtx);
+                cp_lock_acquire(lk);
                 jobChunk = next; jobDone = false;
-                pthread_cond_signal(&cvar);
-                pthread_mutex_unlock(&mtx);
+                cp_lock_signal(lk);
+                cp_lock_release(lk);
             }
         }
         return;
@@ -1200,7 +1202,8 @@ void SceneSetQuality(int q)
 {
     gQuality = q;
     if (q == 0) { LOAD_RADIUS = 850; DRAW_RADIUS = 1000; TREE_NEAR = 80; TREE_MID = 200; TREE_FAR = 0; }
-    else { LOAD_RADIUS = 1200; DRAW_RADIUS = 1450; TREE_NEAR = 110; TREE_MID = 300; TREE_FAR = 560; }
+    else if (q == 1) { LOAD_RADIUS = 1200; DRAW_RADIUS = 1450; TREE_NEAR = 110; TREE_MID = 300; TREE_FAR = 560; }
+    else { LOAD_RADIUS = 1650; DRAW_RADIUS = 2000; TREE_NEAR = 150; TREE_MID = 420; TREE_FAR = 760; }
     // rebuild everything with the new settings
     for (int i = 0; i < nChunks; i++) if (chunks[i].built && i != jobChunk) unloadChunk(&chunks[i]);
 }
@@ -1225,7 +1228,7 @@ void SceneDraw(Camera3D cam)
     // far terrain with lighter fog so the hills show on the horizon
     RenderSetFog(1.0f / 5200.0f);
     for (int i = 0; i < nFar; i++) DrawMesh(farMesh[i], litMat, MatrixIdentity());
-    RenderSetFog(gQuality ? 1.0f / 1150.0f : 1.0f / 850.0f);
+    RenderSetFog(gQuality == 2 ? 1.0f / 1450.0f : gQuality == 1 ? 1.0f / 1150.0f : 1.0f / 850.0f);
     for (int i = 0; i < nChunks; i++) {
         Chunk *c = &chunks[i];
         if (!c->built) continue;

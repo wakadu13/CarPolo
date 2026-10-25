@@ -1,0 +1,34 @@
+CarPolo 3D — la C4 Cactus sur le vrai trajet
+=============================================
+
+Trajet réel de 12,5 km : 2000 chemin départemental 15 (La Pécette, Cornillon-Confoux)
+-> Les Grandes Bastides -> Lançon-Provence -> route de Pélissanne -> arrivée près de l'A54.
+But : arriver le plus vite possible sans accident (permis à 12 points, -3 par accident).
+
+Commandes
+---------
+  Flèches / ZQSD / WASD : conduire (bas = frein puis marche arrière)
+  H : klaxon     C : changer de caméra     P ou Échap : pause
+  F11 ou Alt+Entrée : plein écran
+  Manette : stick gauche + gâchettes (ou A / X)
+
+Le menu permet de régler l'aide à la direction, la caméra, le son et les graphismes
+(léger / normal / élevé). Le record est enregistré dans le dossier utilisateur.
+
+Lancer le jeu
+-------------
+  Windows : double-cliquer sur CarPolo3D.exe. Si Windows SmartScreen affiche
+            « Windows a protégé votre ordinateur », cliquer sur « Informations
+            complémentaires » puis « Exécuter quand même » (le jeu n'est pas signé).
+  macOS   : glisser « CarPolo 3D.app » dans Applications. Au premier lancement,
+            clic droit sur l'app -> Ouvrir -> Ouvrir (application non notarisée).
+            Si macOS dit que l'app est endommagée :
+              xattr -dr com.apple.quarantine "/Applications/CarPolo 3D.app"
+  Linux   : ./carpolo3d (carte graphique compatible OpenGL 3.3).
+            Raccourci optionnel : ./installer-raccourci.sh
+
+Configuration conseillée : carte graphique OpenGL 3.3, 4 Go de RAM.
+
+Données : OpenStreetMap (via Overture Maps), EU-DEM, ESA WorldCover 2021.
+Police : Liberation Sans (SIL Open Font License, voir assets/font-OFL.txt).
+Code : https://github.com/wakadu13/CarPolo (dossier game3d/)

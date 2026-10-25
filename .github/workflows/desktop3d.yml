@@ -1,0 +1,169 @@
+name: CarPolo 3D PC (Windows, macOS, Linux)
+
+on:
+  push:
+    paths:
+      - "game3d/**"
+      - ".github/workflows/desktop3d.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One run at a time so two quick pushes don't race on the "desktop3d-latest" release.
+concurrency:
+  group: desktop3d
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04          # older glibc (2.35) = runs on more distributions
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libasound2-dev xvfb xauth libgl1-mesa-dri
+      - name: Build
+        run: |
+          cmake -S game3d -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Smoke test (autopilot, headless software OpenGL)
+        run: |
+          mkdir -p smoke && cd smoke
+          CARPOLO_TEST=1 timeout 900 xvfb-run -a -s "-screen 0 1280x720x24" ../game3d/build-bin/carpolo3d > log.txt 2>&1 || true
+          grep -E "TEST:|ERROR|WORLD:" log.txt || true
+          if grep -q "TEST: done" log.txt; then echo "::notice title=Linux smoke test::$(grep 'TEST: done' log.txt | sed 's/.*TEST: //')"; else echo "::error title=Linux smoke test::the game did not finish its test run"; tail -40 log.txt; exit 1; fi
+      - name: Package
+        run: BUILD_NUMBER=$(git rev-list --count HEAD) game3d/desktop/package.sh linux game3d/build-bin/carpolo3d dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarPolo3D-linux
+          path: dist/CarPolo3D-linux-x64.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: captures-linux
+          path: smoke/*.png
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows x64
+    runs-on: ubuntu-22.04          # cross-compiled with MinGW-w64: one static .exe, no DLLs to ship
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: MinGW-w64
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends mingw-w64 zip
+      - name: Build
+        run: |
+          cmake -S game3d -B build-win -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/game3d/desktop/mingw-w64-x86_64.cmake"
+          cmake --build build-win -j4
+          x86_64-w64-mingw32-objdump -p game3d/build-bin/carpolo3d.exe | grep "DLL Name"
+      - name: Package
+        run: game3d/desktop/package.sh windows game3d/build-bin/carpolo3d.exe dist
+      - name: Smoke test under Wine (best effort)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends wine64 xvfb xauth libgl1-mesa-dri unzip
+          mkdir -p wsmoke && cd wsmoke && unzip -q ../dist/CarPolo3D-windows-x64.zip && cd CarPolo3D
+          export WINEPREFIX="$RUNNER_TEMP/wineprefix" WINEDEBUG=-all
+          WINE=$(command -v wine64 || echo /usr/lib/wine/wine64)
+          CARPOLO_TEST=1 timeout 1200 xvfb-run -a -s "-screen 0 1280x720x24" "$WINE" ./CarPolo3D.exe > log.txt 2>&1 || true
+          grep -E "TEST:|ERROR|WORLD:" log.txt | head -20 || true
+          if grep -q "TEST: done" log.txt; then echo "::notice title=Windows smoke test (Wine)::$(grep 'TEST: done' log.txt | sed 's/.*TEST: //')"; else echo "::warning title=Windows smoke test (Wine)::did not complete"; tail -20 log.txt; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: captures-windows
+          path: wsmoke/CarPolo3D/*.png
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarPolo3D-windows
+          path: dist/CarPolo3D-windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal (Apple Silicon + Intel)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: |
+          cmake -S game3d -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build -j4
+          lipo -info game3d/build-bin/carpolo3d
+      - name: Smoke test (best effort)
+        continue-on-error: true
+        run: |
+          mkdir -p smoke && cd smoke
+          CARPOLO_TEST=1 ../game3d/build-bin/carpolo3d > log.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 180); do sleep 5; grep -q "TEST: done" log.txt && break; kill -0 $pid 2>/dev/null || break; done
+          kill $pid 2>/dev/null || true
+          grep -E "TEST:|ERROR|GL:|WORLD:" log.txt | head -30 || true
+          if grep -q "TEST: done" log.txt; then echo "::notice title=macOS smoke test::$(grep 'TEST: done' log.txt | sed 's/.*TEST: //')"; else echo "::warning title=macOS smoke test::did not complete on the CI runner"; tail -20 log.txt; fi
+      - name: Package (.app, ad-hoc signed)
+        run: BUILD_NUMBER=$(git rev-list --count HEAD) game3d/desktop/package.sh macos game3d/build-bin/carpolo3d dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarPolo3D-macos
+          path: dist/CarPolo3D-macos.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: captures-macos
+          path: smoke/*.png
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: CarPolo3D-*
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - name: Remove previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete desktop3d-latest --cleanup-tag -y --repo "$GITHUB_REPOSITORY" || true
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop3d-latest
+          target_commitish: ${{ github.sha }}
+          name: "CarPolo 3D – PC (Windows, macOS, Linux)"
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/CarPolo3D-windows-x64.zip
+            dist/CarPolo3D-macos.zip
+            dist/CarPolo3D-linux-x64.tar.gz
+          body: |
+            **CarPolo 3D** pour ordinateur : la C4 Cactus sur le vrai trajet Cornillon-Confoux → Lançon → près de l'A54
+            (commit `${{ github.sha }}`).
+
+            | Système | Fichier | Lancer |
+            |---|---|---|
+            | Windows 10/11 (64 bits) | `CarPolo3D-windows-x64.zip` | Décompresser, double-cliquer sur `CarPolo3D.exe`. SmartScreen : « Informations complémentaires » → « Exécuter quand même ». |
+            | macOS 11+ (Apple Silicon et Intel) | `CarPolo3D-macos.zip` | Décompresser, glisser « CarPolo 3D.app » dans Applications, puis clic droit → Ouvrir (app non notarisée). |
+            | Linux 64 bits | `CarPolo3D-linux-x64.tar.gz` | `tar xzf CarPolo3D-linux-x64.tar.gz && ./CarPolo3D/carpolo3d` |
+
+            Commandes : flèches (ou ZQSD/WASD), H klaxon, C caméra, P pause, F11 plein écran ; manette compatible.
+            Il faut une carte graphique OpenGL 3.3. La version Android est dans la release `apk3d-latest`.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CarPolo 3D
+Comment=La C4 Cactus sur le vrai trajet Cornillon-Confoux → Salon
+Exec=carpolo3d
+Icon=carpolo3d
+Terminal=false
+Categories=Game;Simulation;

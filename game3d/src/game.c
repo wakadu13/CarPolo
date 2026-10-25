@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 #if defined(PLATFORM_ANDROID)
 #include "platform_android.h"
 #endif
@@ -49,6 +50,7 @@ typedef struct {
     char msg[64]; float msgT; Color msgCol;
     float goT;
     bool touchUI;
+    bool quit;
     float horizonFog;
     Font font;
     bool fontOk;
@@ -96,9 +98,14 @@ static const char *AssetPath(const char *name)
 #if defined(PLATFORM_ANDROID)
     return name;
 #else
+    // release layout: <exe dir>/assets ; macOS bundle: Contents/MacOS/../Resources/assets ; dev: build-bin/../assets
     static char buf[1024];
-    snprintf(buf, sizeof(buf), "%s../assets/%s", GetApplicationDirectory(), name);
-    if (FileExists(buf)) return buf;
+    const char *dir = GetApplicationDirectory();
+    const char *cands[] = { "%sassets/%s", "%s../Resources/assets/%s", "%s../assets/%s" };
+    for (int i = 0; i < 3; i++) {
+        snprintf(buf, sizeof(buf), cands[i], dir, name);
+        if (FileExists(buf)) return buf;
+    }
     snprintf(buf, sizeof(buf), "assets/%s", name);
     return buf;
 #endif
@@ -110,7 +117,21 @@ static const char *SavePath(void)
     return "carpolo3d.sav";
 #else
     static char buf[1024];
-    snprintf(buf, sizeof(buf), "%scarpolo3d.sav", GetApplicationDirectory());
+    char dir[900] = { 0 };
+    const char *home = getenv("HOME");
+#if defined(_WIN32)
+    const char *appdata = getenv("APPDATA");
+    if (appdata) snprintf(dir, sizeof(dir), "%s\\CarPolo3D", appdata);
+#elif defined(__APPLE__)
+    if (home) snprintf(dir, sizeof(dir), "%s/Library/Application Support/CarPolo3D", home);
+#else
+    const char *xdg = getenv("XDG_DATA_HOME");
+    if (xdg && xdg[0]) snprintf(dir, sizeof(dir), "%s/carpolo3d", xdg);
+    else if (home) snprintf(dir, sizeof(dir), "%s/.local/share/carpolo3d", home);
+#endif
+    (void)home;
+    if (dir[0] && (DirectoryExists(dir) || MakeDirectory(dir) == 0)) snprintf(buf, sizeof(buf), "%s/carpolo3d.sav", dir);
+    else snprintf(buf, sizeof(buf), "%scarpolo3d.sav", GetApplicationDirectory());
     return buf;
 #endif
 }
@@ -119,7 +140,11 @@ typedef struct { float best; int assist, sound, cam, quality; } SaveData;
 
 static void LoadSave(void)
 {
+#if defined(PLATFORM_ANDROID)
     G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE; G.quality = 1;
+#else
+    G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE; G.quality = 2;
+#endif
     int size = 0;
     unsigned char *d = LoadFileData(SavePath(), &size);
     if (d && size == (int)sizeof(SaveData)) {
@@ -127,7 +152,7 @@ static void LoadSave(void)
         memcpy(&s, d, sizeof(s));
         G.bestTime = s.best; G.assist = s.assist; G.sound = s.sound;
         G.camMode = (CamMode)(s.cam >= 0 && s.cam < CAM_COUNT ? s.cam : 0);
-        G.quality = s.quality ? 1 : 0;
+        G.quality = s.quality < 0 ? 0 : s.quality > 2 ? 2 : s.quality;
     }
     if (d) UnloadFileData(d);
 }
@@ -209,7 +234,16 @@ static void UpdateInput(void)
     memset(in, 0, sizeof(*in));
     int W_ = GetScreenWidth(), H_ = GetScreenHeight();
     float u = U();
+#if defined(PLATFORM_ANDROID)
     int n = GetTouchPointCount();
+#else
+    int n = 0;
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        Vector2 m = GetMousePosition();
+        if (m.x < 70 * u && m.y < 70 * u) in->pause = true;
+        else if (m.x > W_ - 70 * u && m.y > 150 * u && m.y < 220 * u) in->cam = true;
+    }
+#endif
     for (int i = 0; i < n; i++) {
         Vector2 p = GetTouchPosition(i);
         if (p.x <= 0 && p.y <= 0) continue;
@@ -225,7 +259,8 @@ static void UpdateInput(void)
         else if (p.x > W_ - 70 * u && p.y > 150 * u && p.y < 220 * u) in->cam = true;
     }
 #if !defined(PLATFORM_ANDROID)
-    if (n > 0 && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !G.touchUI) { /* desktop mouse acts as a finger */ }
+    // F11 or Alt+Enter: borderless fullscreen
+    if (IsKeyPressed(KEY_F11) || ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER))) ToggleBorderlessWindowed();
 #endif
     if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) || IsKeyDown(KEY_Q)) in->left = true;
     if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) in->right = true;
@@ -246,6 +281,9 @@ static void UpdateInput(void)
     // edge detection stored in the "pressed" flags via previous values
     static bool prevPause, prevCam, prevHorn;
     bool p0 = in->pause, c0 = in->cam, h0 = in->horn;
+#if !defined(PLATFORM_ANDROID)
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { prevPause = false; prevCam = false; }
+#endif
     in->pause = p0 && !prevPause;
     in->cam = c0 && !prevCam;
     in->horn = h0 && !prevHorn;
@@ -582,7 +620,7 @@ static void DrawHUD(void)
         DrawPedal((Rectangle){ W_ - 130 * u, H_ - 150 * u, 100 * u, 130 * u }, in->gas, (Color){ 52, 190, 120, 255 }, "GAZ");
         DrawCircleBtn((Vector2){ W_ - 175 * u, H_ - 190 * u }, 24 * u, false, (Color){ 150, 110, 230, 255 }, 3);
     } else if (racing && G.raceTime < 10) {
-        Text("Flèches : conduire   H : klaxon   C : caméra   P : pause", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
+        Text("Flèches : conduire   H : klaxon   C : caméra   P : pause   F11 : plein écran", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
     }
 }
 
@@ -615,9 +653,13 @@ static void DrawTitle(void)
     if (UIButton((Rectangle){ cx - 110 * u, y, 220 * u, 30 * u }, G.assist ? "Aide à la direction : OUI" : "Aide à la direction : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.assist = !G.assist; WriteSave(); }
     y += 36 * u;
     if (UIButton((Rectangle){ cx - 110 * u, y, 105 * u, 30 * u }, G.sound ? "Son : OUI" : "Son : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.sound = !G.sound; AudioSetEnabled(G.sound); WriteSave(); }
-    if (UIButton((Rectangle){ cx + 5 * u, y, 105 * u, 30 * u }, G.quality ? "Graph. : normal" : "Graph. : léger", (Color){ 74, 140, 220, 255 }, 13 * u)) { G.quality = !G.quality; SceneSetQuality(G.quality); WriteSave(); }
+    static const char *qn[3] = { "Graph. : léger", "Graph. : normal", "Graph. : élevé" };
+    if (UIButton((Rectangle){ cx + 5 * u, y, 105 * u, 30 * u }, qn[G.quality], (Color){ 74, 140, 220, 255 }, 13 * u)) { G.quality = (G.quality + 1) % 3; SceneSetQuality(G.quality); WriteSave(); }
     y += 40 * u;
     Text(G.bestTime > 0 ? TextFormat("Record : %s", FmtTime(G.bestTime)) : "Pas encore de record", cx, y, 15 * u, (Color){ 176, 48, 106, 255 }, 1);
+#if !defined(PLATFORM_ANDROID)
+    if (UIButton((Rectangle){ W_ - 104 * u, 8 * u, 96 * u, 26 * u }, "Quitter", (Color){ 110, 116, 130, 255 }, 13 * u)) G.quit = true;
+#endif
     float ms = fminf(H_ * 0.62f, W_ - (p.x + p.width) - 40 * u);
     if (ms > 120 * u) {
         float mx = p.x + p.width + (W_ - p.x - p.width - ms) / 2, my = H_ * 0.12f;
@@ -662,7 +704,7 @@ static void DrawResults(void)
 static void Draw3D(void)
 {
     BeginMode3D(G.cam);
-    RenderSetFrame(G.cam, SceneQuality() ? 1.0f / 1150.0f : 1.0f / 850.0f);
+    RenderSetFrame(G.cam, SceneQuality() == 2 ? 1.0f / 1450.0f : SceneQuality() == 1 ? 1.0f / 1150.0f : 1.0f / 850.0f);
     SceneDraw(G.cam);
     SignsDraw(G.cam);
     TrafficDraw(G.cam);
@@ -684,6 +726,12 @@ int GameRun(void)
 #endif
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "CarPolo 3D");
+#if !defined(PLATFORM_ANDROID) && !defined(__APPLE__)
+    {
+        Image icon = LoadImage(AssetPath("icon.png"));
+        if (icon.data) { SetWindowIcon(icon); UnloadImage(icon); }
+    }
+#endif
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     // loading screen
@@ -737,7 +785,7 @@ int GameRun(void)
     float acc = 0;
     const float STEP = 1.0f / 120.0f;
 
-    while (!WindowShouldClose()) {
+    while (!WindowShouldClose() && !G.quit) {
         float dt = GetFrameTime();
         if (dt > 0.1f) dt = 0.1f;
         UpdateInput();
