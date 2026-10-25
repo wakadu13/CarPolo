@@ -168,7 +168,7 @@ static Color classColor(int cls, float x, float z)
     case LC_RESIDENTIAL: c = ColorLerp((Color){ 120, 128, 80, 255 }, (Color){ 150, 146, 112, 255 }, n2); break;
     case LC_INDUSTRIAL:  c = ColorLerp((Color){ 150, 146, 136, 255 }, (Color){ 170, 166, 154, 255 }, n2); break;
     case LC_BARE:        c = ColorLerp((Color){ 186, 176, 152, 255 }, (Color){ 206, 196, 172, 255 }, n2); break;
-    case LC_WATER:       c = (Color){ 64, 102, 118, 255 }; break;
+    case LC_WATER:       c = ColorLerp((Color){ 46, 92, 104, 255 }, (Color){ 70, 118, 126, 255 }, n2); break;
     case LC_WETLAND:     c = (Color){ 96, 112, 78, 255 }; break;
     case LC_PAVED:       c = (Color){ 120, 120, 116, 255 }; break;
     default:             c = ColorLerp((Color){ 132, 138, 78, 255 }, (Color){ 160, 152, 96, 255 }, n); break;
@@ -249,16 +249,33 @@ static void treeCypress(MeshBuf *b, Vector3 p, float h, unsigned seed, int lod)
 
 static void treePlane(MeshBuf *b, Vector3 p, float h, unsigned seed, int lod)
 {
-    // platane: mottled pale trunk, wide crown turning yellow in autumn
-    Color leaf = ColorLerp((Color){ 112, 126, 56, 255 }, (Color){ 176, 156, 70, 255 }, (seed & 255) / 255.0f);
-    treeTrunk(b, (Vector3){ p.x, p.y - 0.2f, p.z }, 0.35f, h * 0.55f, (Color){ 168, 162, 128, 255 }, lod);
+    // platane: thick mottled pale trunk splitting into limbs, wide crown yellowing in autumn
+    Color leaf = ColorLerp((Color){ 118, 128, 58, 255 }, (Color){ 182, 158, 72, 255 }, (seed & 255) / 255.0f);
+    Color bark = { 176, 168, 134, 255 };
+    float th = h * 0.36f;
+    MB_Cylinder(b, (Vector3){ p.x, p.y - 0.2f, p.z }, 0.42f, 0.34f, th + 0.2f, lod == 0 ? 7 : 4, bark, false);
     unsigned s = seed;
-    int puffs = lod == 0 ? 3 : 1;
+    if (lod == 0) {
+        for (int k = 0; k < 3; k++) {
+            float a = k * 2.1f + Rand01(&s);
+            Vector3 b0 = { p.x, p.y + th, p.z };
+            Vector3 b1 = { p.x + cosf(a) * h * 0.18f, p.y + th + h * 0.26f, p.z + sinf(a) * h * 0.18f };
+            Vector3 dv = Vector3Subtract(b1, b0);
+            for (int q = 0; q < 4; q++) {
+                float a0 = q * PI * 0.5f, a1 = (q + 1) * PI * 0.5f, r0 = 0.24f, r1 = 0.14f;
+                Vector3 o0 = { cosf(a0), 0, sinf(a0) }, o1 = { cosf(a1), 0, sinf(a1) };
+                MB_Quad(b, Vector3Add(b0, Vector3Scale(o0, r0)), Vector3Add(b1, Vector3Scale(o0, r1)),
+                        Vector3Add(b1, Vector3Scale(o1, r1)), Vector3Add(b0, Vector3Scale(o1, r0)), bark);
+                (void)dv;
+            }
+        }
+    }
+    int puffs = lod == 0 ? 4 : 1;
     for (int k = 0; k < puffs; k++) {
-        float ox = (Rand01(&s) - 0.5f) * h * 0.3f, oz = (Rand01(&s) - 0.5f) * h * 0.3f;
-        float rr = h * (puffs == 1 ? 0.42f : 0.3f);
-        MB_Blob(b, (Vector3){ p.x + ox, p.y + h * 0.7f + Rand01(&s) * h * 0.08f, p.z + oz }, (Vector3){ rr, rr * 0.7f, rr },
-                lod == 0 ? 3 : 2, ColorJitter(leaf, seed + k, 12), 0.3f, seed + k * 13);
+        float a = k * 1.7f + Rand01(&s) * 0.8f, rr = puffs == 1 ? h * 0.42f : h * (0.27f + Rand01(&s) * 0.06f);
+        float off = puffs == 1 ? 0 : h * 0.17f;
+        MB_Blob(b, (Vector3){ p.x + cosf(a) * off, p.y + h * 0.66f + Rand01(&s) * h * 0.08f, p.z + sinf(a) * off },
+                (Vector3){ rr, rr * 0.62f, rr }, lod == 0 ? 3 : 2, ColorJitter(leaf, seed + k, 14), 0.35f, seed + k * 13);
     }
 }
 
@@ -355,6 +372,7 @@ static void buildTerrain(Chunk *c, MeshBuf *t, MeshBuf *d)
                         N[b][a] = Vector3Normalize((Vector3){ -(DemHeight(x + e, z) - DemHeight(x - e, z)) / (2 * e), 1,
                                                               -(DemHeight(x, z + e) - DemHeight(x, z - e)) / (2 * e) });
                     }
+                    if (GridClass(&W.lcov, x, z) == LC_WATER && (rd < 0 || rd > hw + SHOULDER + BLEND)) P[b][a].y -= 2.4f;
                     C[b][a] = terrainColor(x, z, N[b][a].y, rd, hw);
                 }
             }
@@ -511,7 +529,40 @@ static void buildRoad(Chunk *c, MeshBuf *r, MeshBuf *d)
         }
     }
 
+    // start line and chequered finish line
+    for (int k = i0; k < i1; k++) {
+        const RoutePt *a = &W.route[k], *b = &W.route[k + 1];
+        bool start = a->s >= 3.0f && a->s < 5.0f, fin = a->s >= W.length - 6.0f && a->s < W.length - 2.0f;
+        if (!start && !fin) continue;
+        float la, ra;
+        pavedExtents(a, &la, &ra);
+        int n = 12;
+        for (int q = 0; q < n; q++) {
+            if (start && q % 2) continue;
+            bool blackSq = ((q + (int)(a->s / 1.0f)) % 2) == 0;
+            Color col = start ? (Color){ 236, 236, 230, 255 } : (blackSq ? (Color){ 25, 25, 28, 255 } : (Color){ 240, 240, 236, 255 });
+            float d0 = la + (ra - la) * q / n, d1 = la + (ra - la) * (q + 1) / n;
+            MB_Quad(r, lat(a, d0, 0.05f), lat(a, d1, 0.05f), lat(b, d1, 0.05f), lat(b, d0, 0.05f), col);
+        }
+    }
     // ---- roadside furniture
+    for (int k = i0; k < i1; k++) {
+        if (W.route[k].flags & RF_BRIDGE) {
+            const RoutePt *a = &W.route[k], *b = &W.route[k + 1];
+            float la, ra, lb, rb;
+            pavedExtents(a, &la, &ra);
+            pavedExtents(b, &lb, &rb);
+            Color conc = { 196, 190, 178, 255 };
+            Vector3 rightA = { -a->hz, 0, a->hx }, leftA = { a->hz, 0, -a->hx };
+            for (int side = -1; side <= 1; side += 2) {
+                float da = side < 0 ? la - 0.5f : ra + 0.5f, db = side < 0 ? lb - 0.5f : rb + 0.5f;
+                Vector3 in = side < 0 ? rightA : leftA;
+                quadFacing(d, lat(a, da, -0.2f), lat(b, db, -0.2f), lat(b, db, 0.95f), lat(a, da, 0.95f), in, conc);
+                quadFacing(d, lat(a, da + side * 0.3f, -1.5f), lat(b, db + side * 0.3f, -1.5f), lat(b, db + side * 0.3f, 0.95f), lat(a, da + side * 0.3f, 0.95f), Vector3Negate(in), ColorBrightness(conc, -0.1f));
+                quadFacing(d, lat(a, da, 0.95f), lat(b, db, 0.95f), lat(b, db + side * 0.3f, 0.95f), lat(a, da + side * 0.3f, 0.95f), (Vector3){ 0, 1, 0 }, ColorBrightness(conc, 0.08f));
+            }
+        }
+    }
     for (int k = i0; k < i1; k++) {
         const RoutePt *a = &W.route[k], *b = &W.route[k + 1];
         float la, ra;

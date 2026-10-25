@@ -9,6 +9,7 @@
 #include "car_model.h"
 #include "traffic.h"
 #include "audio.h"
+#include "signs.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -659,6 +660,7 @@ static void Draw3D(void)
     BeginMode3D(G.cam);
     RenderSetFrame(G.cam, 1.0f / 1500.0f);
     SceneDraw(G.cam);
+    SignsDraw(G.cam);
     TrafficDraw(G.cam);
     bool blink = G.invuln > 0 && ((int)(G.invuln * 8) % 2 == 0);
     if (G.cactusReady && !blink) {
@@ -708,6 +710,7 @@ int GameRun(void)
     RenderInit();
     CarInitShared();
     SceneInit();
+    SignsInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();
     G.cactusReady = true;
     TrafficInit();
@@ -795,7 +798,7 @@ int GameRun(void)
         const char *shotName = NULL;
         if (testMode) {
             testT += dt;
-            static const float tp[] = { 2550, 4950, 6560, 9050, 11800 };
+            static const float tp[] = { 4640, 6440, 2560, 9050, 30 };
             switch (testStep) {
             case 0: if (testT > 1.0f) { shot = true; shotName = "t_title.png"; testStep++; testT = 0; } break;
             case 1: StartRace(); testStep++; testT = 0; break;
@@ -808,8 +811,9 @@ int GameRun(void)
                     if ((testStep - 5) % 2 == 0) {
                         if (k < 5) { CarReset(&G.car, tp[k], LaneCenterD(RouteIndexAtS(tp[k]), 1, 0)); G.car.speed = 15; TrafficReset(tp[k]); G.camPos = G.car.pos; testStep++; testT = 0; }
                     } else if (testT > 3.5f) { static char nm[32]; snprintf(nm, sizeof(nm), "t_place%d.png", k); shot = true; shotName = nm; testStep++; testT = 0; }
-                } else if (testStep == 15) { CarReset(&G.car, W.length - 60, LaneCenterD(W.nRoute - 2, 1, 0)); G.car.speed = 20; testStep++; testT = 0; }
-                else if (testStep == 16 && testT > 7.0f) { shot = true; shotName = "t_finish.png"; testStep++; testT = 0; }
+                } else if (testStep == 15) { CarReset(&G.car, W.length - 75, LaneCenterD(W.nRoute - 2, 1, 0)); G.car.speed = 14; testStep++; testT = 0; }
+                else if (testStep == 16 && testT > 2.6f) { shot = true; shotName = "t_arrival.png"; testStep = 21; testT = 0; }
+                else if (testStep == 21 && testT > 6.0f) { shot = true; shotName = "t_finish.png"; testStep = 17; testT = 0; }
                 else if (testStep == 17) { G.camMode = CAM_HOOD; StartRace(); testStep++; testT = 0; }
                 else if (testStep == 18 && testT > 9.0f) { shot = true; shotName = "t_hood.png"; testStep++; testT = 0; }
                 else if (testStep == 19) { G.camMode = CAM_CHASE; testStep++; }
@@ -838,6 +842,7 @@ int GameRun(void)
     }
     TrafficShutdown();
     UnloadCarModel(&G.cactus);
+    SignsShutdown();
     SceneShutdown();
     RenderShutdown();
     WorldUnload();
