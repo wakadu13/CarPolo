@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- C4 Cactus "Bleu Émeraude" -->
+    <color name="ic_launcher_background">#FF1E6E8A</color>
+    <color name="cactus_blue">#FF1E6E8A</color>
+    <color name="carpolo_black">#FF000000</color>
+</resources>

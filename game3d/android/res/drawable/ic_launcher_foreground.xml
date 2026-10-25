@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- C4 Cactus side view (heading right) + yellow "3D" badge, inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- "3D" badge -->
+    <path
+        android:fillColor="#FFFFD23F"
+        android:pathData="M45,22 L63,22 Q66,22 66,25 L66,34 Q66,37 63,37 L45,37 Q42,37 42,34 L42,25 Q42,22 45,22 Z"
+        android:strokeWidth="2"
+        android:strokeColor="#FF0F2A36"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M46.5,25.6 Q49.5,24 51.5,25.8 Q53,28 50,29.4 Q53.2,30.6 51.8,33 Q49.8,35 46.5,33.6 M50,29.4 L48.6,29.4"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FF0F2A36"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M55.5,25 L55.5,34 L57.5,34 Q62,34 62,29.5 Q62,25 57.5,25 Z"
+        android:strokeWidth="2.2"
+        android:strokeColor="#FF0F2A36"
+        android:strokeLineJoin="round" />
+
+    <!-- Ground shadow -->
+    <path
+        android:fillColor="#33000000"
+        android:pathData="M27,74 L83,74 A3,1.8 0 0,1 83,77.6 L27,77.6 A3,1.8 0 0,1 27,74 Z" />
+
+    <!-- Body -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M24,66 L24,58 Q24,54 28,53 L38,51.5 L45,44.5 Q47,42.5 50,42.5 L72,42.5 Q75,42.5 77,45 L82,51 L84,52 Q87,53 87,57 L87,66 Q87,68.5 84.5,68.5 L26.5,68.5 Q24,68.5 24,66 Z"
+        android:strokeWidth="2.6"
+        android:strokeColor="#FF0F2A36"
+        android:strokeLineJoin="round" />
+    <!-- Roof rail -->
+    <path
+        android:pathData="M50.5,40.4 L72,40.4"
+        android:strokeWidth="1.8"
+        android:strokeColor="#FF0F2A36"
+        android:strokeLineCap="round" />
+    <!-- Windows -->
+    <path
+        android:fillColor="#FF0F2A36"
+        android:pathData="M42.6,51 L47.6,45.8 Q48.6,44.9 50,44.9 L58,44.9 L58,51 Z M61,51 L61,44.9 L71,44.9 Q72.8,44.9 74.2,46.6 L78.4,51 Z" />
+    <!-- Black lower cladding with the white Airbump strips -->
+    <path
+        android:fillColor="#FF0F2A36"
+        android:pathData="M25.5,62 L85.5,62 L85.5,66.5 L25.5,66.5 Z" />
+    <path
+        android:pathData="M45,64.2 L52.5,64.2 M58.5,64.2 L66,64.2"
+        android:strokeWidth="1.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
+    <!-- Lights -->
+    <path
+        android:fillColor="#FFFFF3C4"
+        android:pathData="M82.6,55.2 L86.4,55.2 L86.4,57.4 L82.6,57.4 Z" />
+    <path
+        android:fillColor="#FFFF5A4E"
+        android:pathData="M24.6,55 L27.6,54.6 L27.6,57.2 L24.6,57.2 Z" />
+    <!-- Wheels -->
+    <path
+        android:fillColor="#FF0F2A36"
+        android:pathData="M29.2,68.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z M67.2,68.5 a6.8,6.8 0 1,0 13.6,0 a6.8,6.8 0 1,0 -13.6,0 Z" />
+    <path
+        android:fillColor="#FFD9DEE2"
+        android:pathData="M32.8,68.5 a3.2,3.2 0 1,0 6.4,0 a3.2,3.2 0 1,0 -6.4,0 Z M70.8,68.5 a3.2,3.2 0 1,0 6.4,0 a3.2,3.2 0 1,0 -6.4,0 Z" />
+</vector>
