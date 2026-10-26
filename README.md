@@ -3,9 +3,10 @@
 Deux jeux sur le même trajet (Cornillon-Confoux → Lançon → près de l'A54) :
 
 - **CarPolo 3D** (`game3d/`, C + raylib) : la vraie C4 Cactus en 3D sur le vrai tracé, relief et bâtiments réels.
-  Android : `https://github.com/wakadu13/CarPolo/releases/download/apk3d-latest/CarPolo3D.apk`
+  **Jouer en ligne : https://wakadu13.github.io/CarPolo/**
+  — Android : `https://github.com/wakadu13/CarPolo/releases/download/apk3d-latest/CarPolo3D.apk`
   — PC Windows / macOS / Linux : release `desktop3d-latest` — voir [game3d/README.md](game3d/README.md).
-- **CarPolo** (version cartoon, `www/`, HTML5) : décrite ci-dessous.
+- **CarPolo** (version cartoon, `www/`, HTML5) : décrite ci-dessous, jouable sur https://wakadu13.github.io/CarPolo/cartoon/.
 
 Jeu de course mobile Android, style cartoon. Tu pilotes une **Citroën C4 bleu turquoise** sur le vrai trajet :
 **2000 chemin départemental 15 (La Pécette, Cornillon-Confoux) ➜ Les Grandes Bastides ➜ Lançon-Provence ➜ A7 ➜ arrivée près de l'A54** (12,6 km).

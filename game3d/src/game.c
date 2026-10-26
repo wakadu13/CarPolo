@@ -17,6 +17,21 @@
 #if defined(PLATFORM_ANDROID)
 #include "platform_android.h"
 #endif
+#if defined(PLATFORM_WEB)
+#include <emscripten/emscripten.h>
+EM_JS(void, cp_web_save, (const char *hex), { try { localStorage.setItem('carpolo3d', UTF8ToString(hex)); } catch (e) {} });
+EM_JS(char *, cp_web_load, (void), {
+    var s = '';
+    try { s = localStorage.getItem('carpolo3d') || ''; } catch (e) {}
+    var n = lengthBytesUTF8(s) + 1, p = _malloc(n);
+    stringToUTF8(s, p, n);
+    return p;
+});
+EM_JS(int, cp_web_flag, (const char *name), { return (location.search.indexOf(UTF8ToString(name)) >= 0) ? 1 : 0; });
+EM_JS(int, cp_web_width, (void), { return window.innerWidth; });
+EM_JS(int, cp_web_height, (void), { return window.innerHeight; });
+EM_JS(void, cp_web_alert, (const char *msg), { alert(UTF8ToString(msg)); });
+#endif
 
 typedef enum { ST_LOADING, ST_TITLE, ST_COUNTDOWN, ST_RACE, ST_PAUSE, ST_FINISH, ST_GAMEOVER } State;
 typedef enum { CAM_CHASE, CAM_FAR, CAM_HOOD, CAM_COUNT } CamMode;
@@ -63,7 +78,7 @@ static Game G;
 
 #if !defined(PLATFORM_ANDROID)
 #include <stdlib.h>
-// ---- automated test (desktop): CARPOLO_TEST=1 drives with an autopilot and saves screenshots
+// ---- automated test (desktop: CARPOLO_TEST=1, web: ?test): autopilot, screenshots on desktop
 static int testMode;
 static float testT;
 static int testStep;
@@ -93,7 +108,7 @@ static void Autopilot(Input *in)
 #endif
 
 // ------------------------------------------------------------------ helpers
-#if !defined(PLATFORM_ANDROID)
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
 // GLFW is bundled inside raylib. It is used here only to check, with small invisible windows, which
 // OpenGL 3.3 setup the graphics driver accepts before raylib opens the real window: raylib 5.5 crashes
 // when window creation fails (some VMs, very old drivers, or a missing 4x multisampling format on
@@ -162,6 +177,10 @@ static const char *AssetPath(const char *name)
 {
 #if defined(PLATFORM_ANDROID)
     return name;
+#elif defined(PLATFORM_WEB)
+    static char buf[256];
+    snprintf(buf, sizeof(buf), "/assets/%s", name);
+    return buf;
 #else
     // release layout: <exe dir>/assets ; macOS bundle: Contents/MacOS/../Resources/assets ; dev: build-bin/../assets
     static char buf[1024];
@@ -178,7 +197,7 @@ static const char *AssetPath(const char *name)
 
 static const char *SavePath(void)
 {
-#if defined(PLATFORM_ANDROID)
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
     return "carpolo3d.sav";
 #else
     static char buf[1024];
@@ -210,16 +229,35 @@ static void LoadSave(void)
 #else
     G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE; G.quality = 2;
 #endif
+    SaveData s;
+    bool ok = false;
+#if defined(PLATFORM_WEB)
+    // localStorage holds the struct as hex
+    char *hex = cp_web_load();
+    if (hex && strlen(hex) == 2 * sizeof(SaveData)) {
+        unsigned char *raw = (unsigned char *)&s;
+        ok = true;
+        for (size_t i = 0; i < sizeof(SaveData); i++) {
+            unsigned v;
+            if (sscanf(hex + 2 * i, "%2x", &v) != 1) { ok = false; break; }
+            raw[i] = (unsigned char)v;
+        }
+    }
+    free(hex);
+#else
     int size = 0;
     unsigned char *d = LoadFileData(SavePath(), &size);
-    if (d && size == (int)sizeof(SaveData)) {
-        SaveData s;
-        memcpy(&s, d, sizeof(s));
+    if (d && size == (int)sizeof(SaveData)) { memcpy(&s, d, sizeof(s)); ok = true; }
+    if (d) UnloadFileData(d);
+#endif
+    if (ok) {
         G.bestTime = s.best; G.assist = s.assist; G.sound = s.sound;
         G.camMode = (CamMode)(s.cam >= 0 && s.cam < CAM_COUNT ? s.cam : 0);
         G.quality = s.quality < 0 ? 0 : s.quality > 2 ? 2 : s.quality;
     }
-    if (d) UnloadFileData(d);
+#if defined(PLATFORM_WEB)
+    if (!ok) G.quality = 1;      // browsers: start at "normal", the menu can raise it
+#endif
 }
 
 static void WriteSave(void)
@@ -228,7 +266,14 @@ static void WriteSave(void)
     if (testMode) return;
 #endif
     SaveData s = { G.bestTime, G.assist, G.sound, (int)G.camMode, G.quality };
+#if defined(PLATFORM_WEB)
+    char hex[2 * sizeof(SaveData) + 1];
+    const unsigned char *raw = (const unsigned char *)&s;
+    for (size_t i = 0; i < sizeof(SaveData); i++) snprintf(hex + 2 * i, 3, "%02x", raw[i]);
+    cp_web_save(hex);
+#else
     SaveFileData(SavePath(), &s, sizeof(s));
+#endif
 }
 
 static void Vibrate(int ms)
@@ -303,7 +348,10 @@ static void UpdateInput(void)
     int n = GetTouchPointCount();
 #else
     int n = 0;
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+#if defined(PLATFORM_WEB)
+    n = GetTouchPointCount();
+#endif
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && n == 0) {
         Vector2 m = GetMousePosition();
         if (m.x < 70 * u && m.y < 70 * u) in->pause = true;
         else if (m.x > W_ - 70 * u && m.y > 150 * u && m.y < 220 * u) in->cam = true;
@@ -323,8 +371,8 @@ static void UpdateInput(void)
         else if (p.x < 70 * u && p.y < 70 * u) in->pause = true;
         else if (p.x > W_ - 70 * u && p.y > 150 * u && p.y < 220 * u) in->cam = true;
     }
-#if !defined(PLATFORM_ANDROID)
-    // F11 or Alt+Enter: borderless fullscreen
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+    // F11 or Alt+Enter: borderless fullscreen (in a browser F11 is the browser's own full screen)
     if (IsKeyPressed(KEY_F11) || ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER))) ToggleBorderlessWindowed();
 #endif
     if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) || IsKeyDown(KEY_Q)) in->left = true;
@@ -685,7 +733,11 @@ static void DrawHUD(void)
         DrawPedal((Rectangle){ W_ - 130 * u, H_ - 150 * u, 100 * u, 130 * u }, in->gas, (Color){ 52, 190, 120, 255 }, "GAZ");
         DrawCircleBtn((Vector2){ W_ - 175 * u, H_ - 190 * u }, 24 * u, false, (Color){ 150, 110, 230, 255 }, 3);
     } else if (racing && G.raceTime < 10) {
+#if defined(PLATFORM_WEB)
+        Text("Flèches ou ZQSD : conduire   H : klaxon   C : caméra   P : pause", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
+#else
         Text("Flèches : conduire   H : klaxon   C : caméra   P : pause   F11 : plein écran", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
+#endif
     }
 }
 
@@ -769,7 +821,7 @@ static void DrawResults(void)
 static void Draw3D(void)
 {
     BeginMode3D(G.cam);
-    RenderSetFrame(G.cam, SceneQuality() == 2 ? 1.0f / 1450.0f : SceneQuality() == 1 ? 1.0f / 1150.0f : 1.0f / 850.0f);
+    RenderSetFrame(G.cam, SceneQuality() == 2 ? 1.0f / 9000.0f : SceneQuality() == 1 ? 1.0f / 7000.0f : 1.0f / 5000.0f);
     SceneDraw(G.cam);
     SignsDraw(G.cam);
     TrafficDraw(G.cam);
@@ -781,16 +833,28 @@ static void Draw3D(void)
         if (!(G.camMode == CAM_HOOD && G.state != ST_TITLE)) DrawCarModel(&G.cactus, body, G.car.wheelSpin, G.car.steerAngle, brakeL);
         else DrawCarModel(&G.cactus, body, G.car.wheelSpin, G.car.steerAngle, brakeL);
     }
+#if defined(PLATFORM_WEB) || defined(PLATFORM_ANDROID)
+    // without vertex array objects (GLES2 fallback) the extra mesh attributes would stay enabled
+    // and break the 2D batch ("no buffer is bound to enabled attribute")
+    rlDisableVertexAttribute(4);
+    rlDisableVertexAttribute(5);
+#endif
     EndMode3D();
 }
 
+static float acc;
+static const float STEP = 1.0f / 120.0f;
+static void Frame(void);
+
 int GameRun(void)
 {
-#if !defined(PLATFORM_ANDROID)
+#if defined(PLATFORM_WEB)
+    testMode = cp_web_flag("test") != 0;
+#elif !defined(PLATFORM_ANDROID)
     testMode = getenv("CARPOLO_TEST") != NULL;
 #endif
     unsigned int flags = FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE;
-#if defined(PLATFORM_ANDROID)
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
     flags |= FLAG_MSAA_4X_HINT;
 #else
     int gl = ProbeOpenGL();
@@ -799,12 +863,17 @@ int GameRun(void)
     else TraceLog(LOG_WARNING, "DISPLAY: 4x multisampling unavailable, antialiasing disabled");
 #endif
     SetConfigFlags(flags);
+#if defined(PLATFORM_WEB)
+    InitWindow(cp_web_width() > 320 ? cp_web_width() : 320, cp_web_height() > 200 ? cp_web_height() : 200, "CarPolo 3D");
+    if (!IsWindowReady()) { cp_web_alert("CarPolo 3D a besoin de WebGL : active l'acceleration materielle du navigateur ou essaie un autre navigateur."); return 1; }
+#else
     InitWindow(1280, 720, "CarPolo 3D");
     if (!IsWindowReady()) {
         TraceLog(LOG_ERROR, "DISPLAY: cannot open an OpenGL 3.3 window (graphics driver too old?)");
         return 1;
     }
-#if !defined(PLATFORM_ANDROID) && !defined(__APPLE__)
+#endif
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB) && !defined(__APPLE__)
     {
         Image icon = LoadImage(AssetPath("icon.png"));
         if (icon.data) { SetWindowIcon(icon); UnloadImage(icon); }
@@ -812,6 +881,7 @@ int GameRun(void)
 #endif
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
+    rlSetClipPlanes(0.25, 30000.0);     // the horizon is 20 km away (raylib's default far plane is 1 km)
     // loading screen
     BeginDrawing();
     ClearBackground((Color){ 74, 128, 196, 255 });
@@ -839,8 +909,8 @@ int GameRun(void)
     }
     RenderInit();
     CarInitShared();
-    SceneInit();
     SceneSetQuality(G.quality);
+    SceneInit();
     SignsInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();
     G.cactusReady = true;
@@ -860,15 +930,33 @@ int GameRun(void)
     TrafficReset(4);
     G.state = ST_LOADING;
     G.cam = (Camera3D){ { 0, 10, 10 }, { 0, 0, 0 }, { 0, 1, 0 }, 55, CAMERA_PERSPECTIVE };
-    float acc = 0;
-    const float STEP = 1.0f / 120.0f;
+    acc = 0;
 
-    while (!WindowShouldClose() && !G.quit) {
+#if defined(PLATFORM_WEB)
+    emscripten_set_main_loop(Frame, 0, 1);     // never returns: the browser owns the loop
+#else
+    while (!WindowShouldClose() && !G.quit) Frame();
+#endif
+    TrafficShutdown();
+    UnloadCarModel(&G.cactus);
+    SignsShutdown();
+    SceneShutdown();
+    RenderShutdown();
+    WorldUnload();
+    if (G.fontOk) UnloadFont(G.font);
+    AudioShutdown();
+    CloseWindow();
+    return 0;
+}
+
+static void Frame(void)
+{
+    {
         float dt = GetFrameTime();
         if (dt > 0.1f) dt = 0.1f;
         UpdateInput();
         if (G.state == ST_LOADING) {
-            SceneUpdate(G.car.pos, 3);
+            SceneUpdate(G.car.pos, 40);
             float pr = SceneProgress(G.car.pos);
             UpdateCamera3D(dt);
             BeginDrawing();
@@ -883,7 +971,7 @@ int GameRun(void)
             DrawRectangle((int)(GetScreenWidth() * 0.3f), (int)(GetScreenHeight() * 0.6f), (int)(GetScreenWidth() * 0.4f * pr), (int)(10 * u), WHITE);
             EndDrawing();
             if (pr >= 1.0f) G.state = ST_TITLE;
-            continue;
+            return;
         }
         if (G.in.pause) {
             if (G.state == ST_RACE || G.state == ST_COUNTDOWN) { G.prevState = G.state; G.state = ST_PAUSE; AudioPause(true); }
@@ -941,7 +1029,7 @@ int GameRun(void)
                     int k = (testStep - 5) / 2;
                     if ((testStep - 5) % 2 == 0) {
                         if (k < 5) { CarReset(&G.car, tp[k], LaneCenterD(RouteIndexAtS(tp[k]), 1, 0)); G.car.speed = 15; TrafficReset(tp[k]); G.camPos = G.car.pos; testStep++; testT = 0; }
-                    } else if (testT > 3.5f) { int nl; long nv; SceneStats(&nl, &nv); TraceLog(LOG_INFO, "TEST: chunks loaded %d, vertices %ld (%.1f MB GPU)", nl, nv, nv * 36.0 / 1e6); static char nm[32]; snprintf(nm, sizeof(nm), "t_place%d.png", k); shot = true; shotName = nm; testStep++; testT = 0; }
+                    } else if (testT > 3.5f) { int nl; long nv, nb; SceneStats(&nl, &nv, &nb); TraceLog(LOG_INFO, "TEST: chunks loaded %d, vertices %ld (%.1f MB GPU)", nl, nv, nb / 1e6); static char nm[32]; snprintf(nm, sizeof(nm), "t_place%d.png", k); shot = true; shotName = nm; testStep++; testT = 0; }
                 } else if (testStep == 15) { CarReset(&G.car, W.length - 75, LaneCenterD(W.nRoute - 2, 1, 0)); G.car.speed = 14; testStep++; testT = 0; }
                 else if (testStep == 16 && testT > 2.6f) { shot = true; shotName = "t_arrival.png"; testStep = 21; testT = 0; }
                 else if (testStep == 21 && testT > 6.0f) { shot = true; shotName = "t_finish.png"; testStep = 17; testT = 0; }
@@ -950,10 +1038,16 @@ int GameRun(void)
                 else if (testStep == 19) { G.camMode = CAM_CHASE; testWrongLane = true; StartRace(); testStep = 22; testT = 0; }
                 else if (testStep == 22 && (G.crashed || testT > 40)) { shot = G.crashed; shotName = "t_crash.png"; TraceLog(LOG_INFO, "TEST: wrong-lane crash=%d after %.1fs points=%d", G.crashed, testT, G.points); testStep = 23; testT = 0; }
                 else if (testStep == 23 && testT > 3.0f) { shot = true; shotName = "t_respawn.png"; TraceLog(LOG_INFO, "TEST: after respawn crashed=%d invuln=%.1f", G.crashed, G.invuln); testWrongLane = false; testStep = 20; testT = 0; }
-                else if (testStep == 20 && testT > 0.5f) break;
                 break;
             }
-            if (testStep == 20 && testT > 0.5f) { TraceLog(LOG_INFO, "TEST: done, crashes=%d time=%.1f", G.crashes, G.raceTime); break; }
+            if (testStep == 20 && testT > 0.5f) {
+                TraceLog(LOG_INFO, "TEST: done, crashes=%d time=%.1f", G.crashes, G.raceTime);
+                G.quit = true;
+#if defined(PLATFORM_WEB)
+                emscripten_cancel_main_loop();
+#endif
+                return;
+            }
         }
 #endif
         UpdateCamera3D(dt);
@@ -969,18 +1063,10 @@ int GameRun(void)
             if ((G.state == ST_FINISH || G.state == ST_GAMEOVER) && G.stateT > 2.0f) DrawResults();
         }
         EndDrawing();
-#if !defined(PLATFORM_ANDROID)
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
         if (shot && shotName) TakeScreenshot(shotName);
+#else
+        (void)shot; (void)shotName;
 #endif
     }
-    TrafficShutdown();
-    UnloadCarModel(&G.cactus);
-    SignsShutdown();
-    SceneShutdown();
-    RenderShutdown();
-    WorldUnload();
-    if (G.fontOk) UnloadFont(G.font);
-    AudioShutdown();
-    CloseWindow();
-    return 0;
 }

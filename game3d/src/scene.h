@@ -11,8 +11,9 @@ typedef struct { float x, z, r; unsigned char kind; } Obstacle; // kind: 0 tree,
 
 void  SceneInit(void);                         // after WorldLoad + RenderInit
 void  SceneShutdown(void);
-// Streams chunks around 'focus'. maxBuild = chunks that may be built this call (0 = none).
-void  SceneUpdate(Vector3 focus, int maxBuild);
+// Streams chunks around 'focus'. budgetMs > 0: build on this thread for at most that long (loading
+// screen); -1: background thread (or a short slice per frame on platforms without threads).
+void  SceneUpdate(Vector3 focus, float budgetMs);
 float SceneProgress(Vector3 focus);            // 0..1: fraction of wanted chunks that are built
 void  SceneDraw(Camera3D cam);
 
@@ -21,8 +22,8 @@ float SceneGround(float x, float z, int routeHint);
 // Corridor distance to the route (coarse, metres; large value outside the corridor)
 float SceneRouteDist(float x, float z);
 // Obstacles near (x,z) within 'radius': returns true and the obstacle hit
-void  SceneStats(int *loaded, long *verts);
-void  SceneSetQuality(int q);                 // 0 light, 1 normal
+void  SceneStats(int *loaded, long *verts, long *bytes);   // bytes = GPU vertex/index memory
+void  SceneSetQuality(int q);                 // 0 light, 1 normal, 2 high (call before SceneInit for the texture size)
 int   SceneQuality(void);
 bool  SceneCollide(float x, float z, float radius, Obstacle *hit);
 

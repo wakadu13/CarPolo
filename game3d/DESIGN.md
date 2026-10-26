@@ -80,8 +80,17 @@ PAINT/GLASS/CHROME, emissive-ish lights), choosing parameters from the material 
 
 - OpenGL ES 2.0 on Android (GLSL `#version 100`), OpenGL 3.3 on desktop (`#version 330`): shaders are
   written once with a small version prefix.
-- Big static geometry is merged per route chunk (≈100 m of route) and uses **non-indexed** meshes
-  (`indices = NULL`) so the 16-bit index limit of GLES2 does not apply; chunks are built/unloaded
-  around the player (streaming).
-- Vertex colours carry albedo; one directional sun (afternoon, from the south-west), hemispherical
-  ambient, exponential fog tinted like the Provence haze.
+- Big static geometry is merged per route chunk (≈100 m of route); chunks are built on a background
+  thread (desktop/Android) or in time slices on the main thread (web, `jobStep` budget) and unloaded
+  around the player (streaming). OpenGL ES 2.0 is also what the web build uses (WebGL 1).
+- Textures are procedural and generated at start-up (`textures.c`): 4 ground textures per material
+  group (terrain: grass, garrigue, soil, limestone; road: asphalt, gravel, dirt, concrete; detail:
+  stucco, roof tiles, bark, concrete) plus a foliage atlas with alpha. Vertex contract (`render.h`):
+  `texcoord` = uv in texture tiles, `texcoord2.x` = material id 0..3 (fractions blend the four
+  textures), `texcoord2.y` = 1 for flat vertex-coloured surfaces, `color.rgb` = tint, `color.a` = opacity.
+  Foliage (leaf cards) is a separate alpha-tested, two-sided mesh per chunk (`gLitCut`).
+- Terrain chunks are indexed (16-bit, shared vertices on a half-cell grid); the rest stays non-indexed.
+  A 40 m "mid" corridor mesh and the 300 m far mesh (flat colours) are always drawn under the chunks,
+  so streaming never shows holes; new chunk details rise from the ground over 1.5 s (`rise` uniform).
+- One directional sun (afternoon, from the south-west), hemispherical ambient, exponential aerial haze
+  (`1 - exp(-d/9000)` at high quality) warmer towards the sun; clip planes 0.25 m .. 30 km.

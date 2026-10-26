@@ -19,6 +19,8 @@ elseif(CARPOLO_FETCH_RAYLIB)
   set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
   if(ANDROID)
     set(PLATFORM "Android" CACHE STRING "" FORCE)
+  elseif(EMSCRIPTEN)
+    set(PLATFORM "Web" CACHE STRING "" FORCE)
   endif()
   FetchContent_Declare(raylib
     GIT_REPOSITORY https://github.com/raysan5/raylib.git
@@ -44,6 +46,25 @@ if(ANDROID)
   # missing symbol (instead of a crash on the phone), 16 KB page alignment (Android 15+ devices).
   target_link_options(main PRIVATE -u ANativeActivity_onCreate -Wl,--no-undefined
                       -Wl,-z,max-page-size=16384 -Wl,--build-id)
+elseif(EMSCRIPTEN)
+  # ---- web (browser): one .html/.js/.wasm/.data bundle, see web/ and .github/workflows/web3d.yml
+  set(CARPOLO_WEB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web)
+  add_executable(carpolo3d ${CARPOLO_SOURCES})
+  target_link_libraries(carpolo3d PRIVATE raylib m)
+  target_compile_definitions(carpolo3d PRIVATE PLATFORM_WEB)
+  set_target_properties(carpolo3d PROPERTIES SUFFIX ".html" OUTPUT_NAME "index"
+                        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/build-web-bin)
+  target_link_options(carpolo3d PRIVATE
+    -sUSE_GLFW=3 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB
+    -sMIN_WEBGL_VERSION=1 -sMAX_WEBGL_VERSION=1 -sASSERTIONS=0 -sENVIRONMENT=web -sFORCE_FILESYSTEM=1 -sMINIFY_HTML=0
+    "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/assets@/assets"
+    "--shell-file=${CARPOLO_WEB_DIR}/shell.html")
+  if(EMSCRIPTEN_VERSION VERSION_GREATER_EQUAL 3.1.25)
+    target_link_options(carpolo3d PRIVATE -sSTACK_SIZE=2MB)
+  else()
+    target_link_options(carpolo3d PRIVATE -sTOTAL_STACK=2MB)
+  endif()
+  set_property(TARGET carpolo3d APPEND PROPERTY LINK_DEPENDS ${CARPOLO_WEB_DIR}/shell.html ${CMAKE_CURRENT_SOURCE_DIR}/assets/world.bin)
 else()
   # ---- desktop: Linux, Windows (MinGW or MSVC), macOS
   set(CARPOLO_DESKTOP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/desktop)

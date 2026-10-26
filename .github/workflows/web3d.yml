@@ -1,0 +1,111 @@
+name: CarPolo 3D Web (navigateur)
+
+on:
+  push:
+    paths:
+      - "game3d/**"
+      - "www/**"
+      - ".github/workflows/web3d.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: web3d
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (Emscripten)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+      - name: Build
+        run: |
+          emcmake cmake -S game3d -B build-web -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-web -j4
+          ls -la game3d/build-web-bin
+      - name: Site
+        run: |
+          mkdir -p site/cartoon
+          cp game3d/build-web-bin/index.html game3d/build-web-bin/index.js game3d/build-web-bin/index.wasm game3d/build-web-bin/index.data site/
+          cp game3d/assets/icon.png site/icon.png
+          cp -r www/* site/cartoon/
+          cp game3d/web/README-site.md site/README.md
+          touch site/.nojekyll
+          (cd site && zip -qr ../CarPolo3D-web.zip .)
+          ls -la site CarPolo3D-web.zip
+      - name: Smoke test (headless Chromium, software WebGL)
+        continue-on-error: true
+        run: |
+          npm install --no-audit --no-fund playwright@1.47.2 > /dev/null 2>&1
+          npx playwright install --with-deps chromium > /dev/null 2>&1
+          if timeout 1500 node game3d/web/smoke.js site smoke-web.png > smoke.log 2>&1; then echo "::notice title=Web smoke test::$(grep 'SMOKE OK' smoke.log)"; else echo "::warning title=Web smoke test::$(tail -3 smoke.log | tr '\n' '|' | cut -c1-600)"; fi
+          cat smoke.log | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: captures-web
+          path: smoke-web*.png
+          if-no-files-found: ignore
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CarPolo3D-web
+          path: CarPolo3D-web.zip
+          if-no-files-found: error
+
+  pages:
+    name: Publish on GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CarPolo3D-web
+          path: dist
+      - name: Remove previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete web3d-latest --cleanup-tag -y --repo "$GITHUB_REPOSITORY" || true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: web3d-latest
+          target_commitish: ${{ github.sha }}
+          name: "CarPolo 3D – version web (navigateur)"
+          prerelease: true
+          make_latest: false
+          files: dist/CarPolo3D-web.zip
+          body: |
+            **CarPolo 3D** dans le navigateur (WebGL), même moteur que les versions Android et PC
+            (commit `${{ github.sha }}`).
+
+            Jouer en ligne : https://wakadu13.github.io/CarPolo/ (la version cartoon est sur /cartoon/).
+
+            `CarPolo3D-web.zip` : le site complet, à servir avec n'importe quel serveur web
+            (par exemple `python3 -m http.server` dans le dossier décompressé, puis http://localhost:8000/).
+            Il ne fonctionne pas en ouvrant `index.html` directement depuis le disque.

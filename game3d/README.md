@@ -1,11 +1,20 @@
 # CarPolo 3D 🚙 — la C4 Cactus sur le vrai trajet
 
-Jeu de conduite en 3D écrit en **C avec raylib 5.5**, pour Android (APK) et PC (Windows, macOS, Linux).
+Jeu de conduite en 3D écrit en **C avec raylib 5.5**, pour Android (APK), PC (Windows, macOS, Linux) et
+**navigateur web** (le même moteur compilé en WebAssembly).
 Tu pilotes une **Citroën C4 Cactus phase 2 « Bleu Émeraude »** (modèle 3D fait sur mesure d'après les photos)
 sur le **vrai trajet** : 2000 chemin départemental 15 (La Pécette, Cornillon-Confoux) → Les Grandes Bastides →
 Lançon-Provence → route de Pélissanne → arrivée près de l'A54 (12,5 km).
 
 But : arriver **le plus vite possible sans accident**.
+
+## Jouer dans le navigateur
+
+**https://wakadu13.github.io/CarPolo/** — rien à installer (Chrome, Firefox, Edge, Safari ; sur téléphone,
+tourne l'écran en paysage, les commandes tactiles s'affichent). Publié automatiquement par GitHub Actions
+(`.github/workflows/web3d.yml`), qui dépose aussi le site complet dans la release `web3d-latest`
+(`CarPolo3D-web.zip`, à servir avec un serveur web local, par exemple `python3 -m http.server`).
+La première version du jeu (cartoon) reste jouable sur https://wakadu13.github.io/CarPolo/cartoon/.
 
 ## Télécharger pour PC (Windows, macOS, Linux)
 
@@ -44,6 +53,9 @@ L'APK est reconstruit automatiquement par GitHub Actions à chaque modification 
 - **Circulation réelle** : les autres voitures respectent les limitations du tracé (50 en agglomération, 30 dans
   les giratoires, 80/90 sur route) ; celles d'en face freinent et klaxonnent si tu es dans leur voie.
 - **Graphismes léger/normal/élevé** : réglage dans le menu (léger pour les téléphones modestes).
+- **Rendu** : textures procédurales (herbe, garrigue, calcaire, bitume, gravier, enduits, tuiles canal,
+  écorce) générées au lancement, arbres faits d'un tronc texturé et de « cartes » de feuillage (pins
+  d'Alep, chênes, oliviers, cyprès, platanes), brume atmosphérique jusqu'à l'horizon (30 km).
 
 ## D'où viennent les données
 
@@ -65,6 +77,8 @@ cmake -S game3d -B game3d/build -DCMAKE_BUILD_TYPE=Release   # récupère raylib
 cmake --build game3d/build -j && ./game3d/build-bin/carpolo3d
 ```
 Windows depuis Linux : `-DCMAKE_TOOLCHAIN_FILE=game3d/desktop/mingw-w64-x86_64.cmake` (paquet `mingw-w64`).
+Web (Emscripten ≥ 3.1.25 recommandé) : `emcmake cmake -S game3d -B build-web -DCMAKE_BUILD_TYPE=Release && cmake --build build-web`
+→ `game3d/build-web-bin/index.{html,js,wasm,data}` ; test automatique : `node game3d/web/smoke.js game3d/build-web-bin`.
 Archives joueurs : `game3d/desktop/package.sh windows|linux|macos <exécutable> <dossier>` (voir `.github/workflows/desktop3d.yml`).
 Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/build-apk.sh` avec un NDK).
 
@@ -74,7 +88,8 @@ Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/
 |---|---|
 | `world.c` | lecture de `assets/world.bin` (tracé, relief, sol, bâtiments, routes, lieux) |
 | `scene.c` | monde en tronçons de 100 m générés en arrière-plan : terrain adapté à la route, marquage, balises J6, lampadaires, glissières, ponts, végétation, bâtiments, routes voisines, horizon |
-| `render.c` | shader d'éclairage (soleil d'après-midi, ciel, brouillard, reflets carrosserie), ciel |
+| `render.c` | shaders d'éclairage (4 textures mélangées par sommet, variante feuillage à test alpha, soleil d'après-midi, brume), ciel, constructeurs de maillages |
+| `textures.c` | textures procédurales répétables + atlas de feuillage (mipmaps à couverture constante) |
 | `car_model.c` | modèles 3D procéduraux : C4 Cactus + 5 véhicules du trafic |
 | `car.c` | physique de la voiture (adhérence, sous-virage, aide à la direction, suspension) |
 | `traffic.c` | trafic (limitations réelles, distances de sécurité, voies, circulation en face) |
@@ -82,4 +97,5 @@ Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/
 | `audio.c` | moteur 4 cylindres, pneus, vent et effets synthétisés en temps réel |
 | `game.c` | états du jeu, caméra, commandes tactiles, HUD, menus |
 
-Mode test automatique (PC) : `CARPOLO_TEST=1 ./build-bin/carpolo3d` (pilote automatique + captures d'écran).
+Mode test automatique (PC) : `CARPOLO_TEST=1 ./build-bin/carpolo3d` (pilote automatique + captures d'écran) ;
+sur le web, ajouter `?test` à l'adresse. `tools/texdump.c` écrit les textures générées en PNG.

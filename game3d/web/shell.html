@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>CarPolo 3D – la C4 Cactus sur le vrai trajet</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #1d2a3a; overflow: hidden; touch-action: none;
+                 font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff; }
+    canvas { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; image-rendering: auto; }
+    #loader { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+              background: linear-gradient(#3b6aad, #1d2a3a); text-align: center; padding: 24px; box-sizing: border-box; }
+    #loader h1 { font-size: 42px; margin: 0 0 8px; letter-spacing: 2px; text-shadow: 0 3px 8px rgba(0,0,0,.4); }
+    #loader p { margin: 4px 0; opacity: .9; }
+    #bar { width: min(420px, 80vw); height: 12px; border-radius: 6px; background: rgba(255,255,255,.25); margin-top: 18px; overflow: hidden; }
+    #bar div { height: 100%; width: 0; background: #fff; transition: width .15s; }
+    #status { margin-top: 10px; font-size: 14px; opacity: .85; }
+    #tip { margin-top: 26px; font-size: 13px; opacity: .7; max-width: 520px; }
+    #fs { position: absolute; right: 10px; bottom: 10px; z-index: 5; background: rgba(0,0,0,.35); color: #fff; border: 1px solid rgba(255,255,255,.4);
+          border-radius: 8px; padding: 6px 10px; font-size: 14px; cursor: pointer; display: none; }
+    #fs:hover { background: rgba(0,0,0,.55); }
+  </style>
+</head>
+<body>
+  <div id="loader">
+    <h1>CARPOLO 3D</h1>
+    <p>Citroën C4 Cactus · Cornillon-Confoux → Lançon → près de l'A54</p>
+    <div id="bar"><div id="barfill"></div></div>
+    <div id="status">Téléchargement…</div>
+    <div id="tip">Clavier : flèches ou ZQSD, H klaxon, C caméra, P pause. Sur téléphone : commandes tactiles à l'écran.
+      Le jeu tourne entièrement dans le navigateur (WebGL) ; la première ouverture télécharge ~6 Mo.</div>
+  </div>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <button id="fs" title="Plein écran">⛶ Plein écran</button>
+  <script>
+    var statusEl = document.getElementById('status'), fill = document.getElementById('barfill'), loader = document.getElementById('loader');
+    var fsBtn = document.getElementById('fs');
+    var Module = {
+      canvas: (function () {
+        var c = document.getElementById('canvas');
+        c.addEventListener('webglcontextlost', function (e) { alert('Le contexte WebGL a été perdu : recharge la page.'); e.preventDefault(); }, false);
+        return c;
+      })(),
+      print: function (t) { console.log(t); },
+      printErr: function (t) { console.warn(t); },
+      setStatus: function (text) {
+        var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+        if (m) { fill.style.width = (100 * m[2] / m[4]) + '%'; statusEl.textContent = 'Téléchargement… ' + Math.round(100 * m[2] / m[4]) + ' %'; }
+        else if (text) statusEl.textContent = text;
+        if (!text) { fill.style.width = '100%'; statusEl.textContent = 'Démarrage…';
+                     setTimeout(function () { loader.style.display = 'none'; fsBtn.style.display = 'block'; }, 400); }
+      },
+      onAbort: function (what) { statusEl.textContent = 'Erreur : ' + what; }
+    };
+    window.onerror = function (msg) { statusEl.textContent = 'Erreur : ' + msg; };
+    fsBtn.addEventListener('click', function () {
+      var el = document.documentElement;
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
+      try { screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(function () {}); } catch (e) {}
+    });
+    document.addEventListener('fullscreenchange', function () { fsBtn.textContent = document.fullscreenElement ? '⛶ Quitter' : '⛶ Plein écran'; });
+    // keep the keyboard on the game (arrow keys must not scroll the page)
+    window.addEventListener('keydown', function (e) { if ([32, 37, 38, 39, 40].indexOf(e.keyCode) >= 0) e.preventDefault(); }, { passive: false });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
