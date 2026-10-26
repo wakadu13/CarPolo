@@ -35,7 +35,7 @@ typedef struct {
     BoundingBox box;
     bool built;
     double shownAt;
-    Mesh terrain, road, detail, foliage;
+    Mesh terrain, road, detail, foliage, models;
     Obstacle *obs; int nObs, capObs;
     int *bld; int nBld, capBld;
     int *pcs; int nPcs, capPcs;
@@ -55,7 +55,17 @@ static Mesh farMesh[16];
 static int nFar;
 static Mesh midMesh[32];
 static int nMid;
-static Material matFlat, matTerrain, matRoad, matDetail, matFoliage, matDepth, matDepthCut;
+static Material matFlat, matTerrain, matRoad, matDetail, matFoliage, matDepth, matDepthCut, matModels, matDepthModels;
+
+// ---- low-poly model pack (assets/trees.bin + trees.png, see tools/treepack.py): used sparingly,
+// each model is 2-5k vertices (roadside trees, village trees, rocks); the mass is procedural.
+typedef struct { char name[32]; float height, radius; int nv; const unsigned char *v; } PackModel;
+enum { PM_SPRUCE_A = 0, PM_SPRUCE_B, PM_BROAD_A, PM_BROAD_B, PM_BIRCH, PM_OAK, PM_POPLAR, PM_BIRCH_B, PM_DEAD, PM_STUMP, PM_SPRUCE_C, PM_SPRUCE_D, PM_ROCK, PM_COUNT };
+static PackModel packModels[PM_COUNT];
+static int nPack;
+static unsigned char *packData;
+static Texture2D packTex;
+#define MODEL_RANGE 90.0f      // metres from the road within which the models replace the leaf cards
 
 // ------------------------------------------------------------------ small helpers
 static void pushInt(int **arr, int *n, int *cap, int v)
@@ -155,8 +165,62 @@ static void triFacingUV(MeshBuf *b, Vector3 a, Vector3 c, Vector3 d, Vector3 hin
 }
 
 static Vector3 vec(float x, float y, float z) { return (Vector3){ x, y, z }; }
-static float sstep(float a, float b, float x) { float t = Clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
 static Vector2 uv2(float u, float v) { return (Vector2){ u, v }; }
+
+static void loadPack(const char *binPath, const char *pngPath)
+{
+    nPack = 0;
+    int size = 0;
+    packData = LoadFileData(binPath, &size);
+    if (!packData || size < 8 || memcmp(packData, "CPT2", 4) != 0) { TraceLog(LOG_WARNING, "MODELS: %s missing or invalid, model pack disabled", binPath); if (packData) UnloadFileData(packData); packData = NULL; return; }
+    unsigned n; memcpy(&n, packData + 4, 4);
+    size_t off = 8;
+    for (unsigned i = 0; i < n && i < PM_COUNT; i++) {
+        if (off + 44 > (size_t)size) break;
+        PackModel *m = &packModels[i];
+        memcpy(m->name, packData + off, 32); m->name[31] = 0; off += 32;
+        unsigned nv; memcpy(&m->height, packData + off, 4); memcpy(&m->radius, packData + off + 4, 4); memcpy(&nv, packData + off + 8, 4); off += 12;
+        if (off + (size_t)nv * 14 > (size_t)size) break;
+        m->nv = (int)nv; m->v = packData + off; off += (size_t)nv * 14;
+        nPack = i + 1;
+    }
+    Image im = LoadImage(pngPath);
+    if (im.data) { packTex = LoadTextureFromImage(im); UnloadImage(im); GenTextureMipmaps(&packTex);
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+        SetTextureFilter(packTex, TEXTURE_FILTER_ANISOTROPIC_8X);
+#endif
+        SetTextureWrap(packTex, TEXTURE_WRAP_CLAMP); }
+    else { TraceLog(LOG_WARNING, "MODELS: %s missing, model pack disabled", pngPath); nPack = 0; }
+    TraceLog(LOG_INFO, "MODELS: %d low-poly models loaded", nPack);
+}
+
+static bool packOk(int idx) { return gQuality > 0 && idx < nPack && packTex.id != 0; }
+
+// one instance of a pack model: h = height in metres, yaw around Y, tint multiplied with its texture
+static void placeModel(MeshBuf *m, int idx, Vector3 p, float h, float yaw, Color tint)
+{
+    const PackModel *pm = &packModels[idx];
+    float s = h / 32767.0f, cs = cosf(yaw), sn = sinf(yaw);
+    MB_Mat(m, 0, 0, 0);
+    Vector3 P[3], N[3]; Vector2 T[3];
+    for (int k = 0; k + 2 < pm->nv; k += 3) {
+        for (int q = 0; q < 3; q++) {
+            const unsigned char *v = pm->v + (size_t)(k + q) * 14;
+            int16_t px, py, pz; memcpy(&px, v, 2); memcpy(&py, v + 2, 2); memcpy(&pz, v + 4, 2);
+            int8_t nx = (int8_t)v[6], ny = (int8_t)v[7], nz = (int8_t)v[8];
+            uint16_t tu, tv; memcpy(&tu, v + 10, 2); memcpy(&tv, v + 12, 2);
+            float x = px * s, y = py * s, z = pz * s;
+            P[q] = vec(p.x + x * cs - z * sn, p.y + y, p.z + x * sn + z * cs);
+            float fx = nx / 127.0f, fz = nz / 127.0f;
+            N[q] = vec(fx * cs - fz * sn, ny / 127.0f, fx * sn + fz * cs);
+            T[q] = uv2(tu / 65535.0f, tv / 65535.0f);
+        }
+        MB_TriUV(m, P[0], P[1], P[2], N[0], N[1], N[2], tint, tint, tint, T[0], T[1], T[2]);
+    }
+}
+
+static float modelObstacleRadius(int idx, float h) { return packModels[idx].height > 0 ? h * packModels[idx].radius / packModels[idx].height * 0.8f : 0.5f; }
+static float sstep(float a, float b, float x) { float t = Clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
 static Color tint(float r, float g, float b) { return (Color){ (unsigned char)Clamp(r * 255, 0, 255), (unsigned char)Clamp(g * 255, 0, 255), (unsigned char)Clamp(b * 255, 0, 255), 255 }; }
 
 // ------------------------------------------------------------------ land cover
@@ -410,10 +474,20 @@ static void grassTuft(MeshBuf *f, Vector3 p, float w, unsigned seed, Color col)
 
 static float treeObstacleRadius(int type) { return type == 3 ? 0.5f : type == 1 ? 0.55f : 0.45f; }
 
-static void placeTree(Chunk *c, MeshBuf *d, MeshBuf *f, int type, Vector3 p, unsigned seed, int lod, float routeDist)
+static void placeTree(Chunk *c, MeshBuf *d, MeshBuf *f, MeshBuf *m, int type, Vector3 p, unsigned seed, int lod, float routeDist)
 {
     unsigned s = seed;
     float h;
+    // broadleaf trees close to the road: low-poly models from the pack (planes stay big and autumnal)
+    if (m && lod == 0 && routeDist < MODEL_RANGE && (type == 0 || type == 1) && packOk(PM_OAK)) {
+        float r = Rand01(&s);
+        int idx = type == 1 ? PM_OAK : (r < 0.4f ? PM_BROAD_B : r < 0.7f ? PM_BROAD_A : PM_OAK);
+        h = type == 1 ? 13 + Rand01(&s) * 5 : 6.5f + Rand01(&s) * 3.5f;
+        Color tint = type == 1 ? ColorJitter((Color){ 232, 216, 160, 255 }, seed, 16) : ColorJitter((Color){ 186, 198, 164, 255 }, seed, 18);
+        placeModel(m, idx, p, h, Rand01(&s) * 2 * PI, tint);
+        if (routeDist < 60) addObs(c, p.x, p.z, type == 1 ? 0.55f : 0.45f, 0);
+        return;
+    }
     switch (type) {
     case 1: h = 14 + Rand01(&s) * 6; treePlane(d, f, p, h, seed, lod); break;
     case 2: h = 9 + Rand01(&s) * 7; treePine(d, f, p, h, seed, lod); break;
@@ -502,7 +576,7 @@ static int terrainVertex(GridBuf *t, const Chunk *c, int kx, int ky, bool confor
     return GB_Vertex(t, kx, ky, P, N, col, uv2(x / GROUND_TILE, z / GROUND_TILE), id, flat);
 }
 
-static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, int j)
+static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, MeshBuf *m, int j)
 {
     for (int i = c->cx0; i <= c->cx1; i++) {
         int k = j * gnx + i;
@@ -558,8 +632,9 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, int j)
         Vector3 p = { px, groundC(c, px, pz, cd), pz };
         switch (cls) {
         case LC_FOREST:
-            if (lod == 2) { if (r3 < 0.45f) placeTree(c, d, f, r3 < 0.3f ? 2 : 0, p, seed, 2, cd); break; }
-            placeTree(c, d, f, r3 < 0.65f ? 2 : 0, p, seed, lod, cd);
+            if (lod == 2) { if (r3 < 0.45f) placeTree(c, d, f, NULL, r3 < 0.3f ? 2 : 0, p, seed, 2, cd); break; }
+            placeTree(c, d, f, NULL, r3 < 0.65f ? 2 : 0, p, seed, lod, cd);
+            if (lod == 0 && cd < 50 && Rand01(&s) < 0.03f && packOk(PM_STUMP)) placeModel(m, PM_STUMP, vec(px + 3, groundC(c, px + 3, pz, cd), pz), 0.9f, Rand01(&s) * 6, (Color){ 220, 210, 196, 255 });
             if (lod == 0 && Rand01(&s) < 0.3f) {
                 float qx = x0 + gcell * Rand01(&s), qz = z0 + gcell * Rand01(&s);
                 bush(f, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, 0.7f + Rand01(&s) * 0.6f, seed + 5, (Color){ 190, 206, 176, 255 }, LEAF_SHRUB);
@@ -572,16 +647,22 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, int j)
                 float qx = x0 + gcell * Rand01(&s), qz = z0 + gcell * Rand01(&s);
                 bush(f, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, 0.5f + Rand01(&s) * 0.5f, seed + 9, (Color){ 226, 222, 192, 255 }, LEAF_SHRUB);
             }
-            if (Rand01(&s) < 0.12f) placeTree(c, d, f, Rand01(&s) < 0.6f ? 2 : 0, (Vector3){ px + 2, p.y, pz - 2 }, seed + 3, lod, cd);
+            if (Rand01(&s) < 0.12f) placeTree(c, d, f, NULL, Rand01(&s) < 0.6f ? 2 : 0, (Vector3){ px + 2, p.y, pz - 2 }, seed + 3, lod, cd);
+            // limestone boulders and the odd dead tree in the garrigue
+            if (lod == 0 && cd < 70) {
+                float r5 = Rand01(&s);
+                if (r5 < 0.035f && packOk(PM_ROCK)) { float rh = 0.8f + Rand01(&s) * 1.6f; placeModel(m, PM_ROCK, vec(px, p.y - 0.15f, pz), rh, Rand01(&s) * 6, (Color){ 236, 228, 210, 255 }); if (cd < 60) addObs(c, px, pz, modelObstacleRadius(PM_ROCK, rh), 1); }
+                else if (r5 < 0.045f && packOk(PM_DEAD)) { placeModel(m, PM_DEAD, p, 4 + Rand01(&s) * 2.5f, Rand01(&s) * 6, (Color){ 210, 200, 186, 255 }); if (cd < 60) addObs(c, px, pz, 0.3f, 0); }
+            }
             break;
         case LC_GRASS:
         case LC_UNKNOWN:
-            if (r3 < 0.08f) placeTree(c, d, f, r3 < 0.03f ? 2 : 0, p, seed, lod, cd);
+            if (r3 < 0.08f) placeTree(c, d, f, m, r3 < 0.03f ? 2 : 0, p, seed, lod, cd);
             else if (lod == 0 && r3 < 0.25f) bush(f, p, 0.6f, seed, (Color){ 206, 218, 180, 255 }, LEAF_SHRUB);
             else if (lod == 0 && r3 < 0.6f) grassTuft(f, p, 1.2f + Rand01(&s) * 0.6f, seed, (Color){ 220, 226, 180, 255 });
             break;
         case LC_CROP:
-            if (r3 < 0.025f) placeTree(c, d, f, r3 < 0.012f ? 3 : 0, p, seed, lod, cd);
+            if (r3 < 0.025f) placeTree(c, d, f, m, r3 < 0.012f ? 3 : 0, p, seed, lod, cd);
             break;
         case LC_VINEYARD:
             if (cd < 320) vineRows(f, c, cx, cz, cd, seed);
@@ -590,18 +671,21 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, int j)
             if (lod < 2) {
                 for (int q = 0; q < 2; q++) {
                     float qx = x0 + gcell * (0.25f + 0.5f * q) + (Rand01(&s) - 0.5f), qz = z0 + gcell * (0.3f + 0.4f * q) + (Rand01(&s) - 0.5f);
-                    placeTree(c, d, f, 4, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, seed + q * 31, lod, cd);
+                    placeTree(c, d, f, NULL, 4, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, seed + q * 31, lod, cd);
                 }
-            } else if (r3 < 0.5f) placeTree(c, d, f, 4, p, seed, 2, cd);
+            } else if (r3 < 0.5f) placeTree(c, d, f, NULL, 4, p, seed, 2, cd);
             break;
         case LC_RESIDENTIAL:
             if (r3 < 0.32f) {
                 float r4 = Rand01(&s);
-                placeTree(c, d, f, r4 < 0.3f ? 3 : r4 < 0.55f ? 2 : r4 < 0.8f ? 1 : 0, p, seed, lod, cd);
+                placeTree(c, d, f, r3 < 0.16f ? m : NULL, r4 < 0.3f ? 3 : r4 < 0.55f ? 2 : r4 < 0.8f ? 1 : 0, p, seed, lod, cd);
             } else if (lod == 0 && r3 < 0.5f) bush(f, p, 0.8f, seed, (Color){ 186, 214, 170, 255 }, LEAF_BROAD);
             break;
         case LC_BARE:
-            if (lod == 0 && r3 < 0.1f) { MB_Mat(d, 3, 0, 3.0f); MB_Blob(d, p, (Vector3){ 1.0f, 0.6f, 0.8f }, 2, (Color){ 230, 226, 214, 255 }, 0.4f, seed); }
+            if (lod == 0 && r3 < 0.1f) {
+                if (packOk(PM_ROCK) && cd < 70) placeModel(m, PM_ROCK, vec(p.x, p.y - 0.15f, p.z), 0.7f + Rand01(&s) * 1.3f, Rand01(&s) * 6, (Color){ 236, 230, 214, 255 });
+                else { MB_Mat(d, 3, 0, 3.0f); MB_Blob(d, p, (Vector3){ 1.0f, 0.6f, 0.8f }, 2, (Color){ 230, 226, 214, 255 }, 0.4f, seed); }
+            }
             break;
         default: break;
         }
@@ -1050,7 +1134,7 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
 // can be run in slices with a time budget (web: no background thread).
 typedef struct {
     Chunk *c;
-    GridBuf t; MeshBuf r, d, f;
+    GridBuf t; MeshBuf r, d, f, m;
     int phase, row, idx;
     bool active;
 } BuildJob;
@@ -1063,6 +1147,8 @@ static void jobStart(BuildJob *j, Chunk *c)
     MB_Init(&j->d, 16384);
     MB_Init(&j->f, 16384);
     MB_Mat(&j->f, 0, 0, 0);          // foliage: always the leaf atlas
+    MB_Init(&j->m, 4096);
+    MB_Mat(&j->m, 0, 0, 0);
     c->nObs = 0;
     j->phase = 1; j->row = c->cz0; j->idx = 0;
     j->active = true;
@@ -1077,7 +1163,7 @@ static bool jobStep(BuildJob *j, double budgetSec)
         switch (j->phase) {
         case 1:
             if (j->row > c->cz1) { j->phase = 2; break; }
-            buildTerrainRow(c, &j->t, &j->d, &j->f, j->row++);
+            buildTerrainRow(c, &j->t, &j->d, &j->f, &j->m, j->row++);
             break;
         case 2: buildRoad(c, &j->r, &j->d); j->phase = 3; j->idx = 0; break;
         case 3:
@@ -1099,7 +1185,7 @@ static bool jobStep(BuildJob *j, double budgetSec)
                 const MappedTree *tr = &W.trees[c->trees[k]];
                 float rd = SceneRouteDist(tr->x, tr->z);
                 Vector3 p = { tr->x, SceneGround(tr->x, tr->z, c->mid), tr->z };
-                placeTree(c, &j->d, &j->f, tr->type == 0 ? 0 : tr->type, p, Hash2(c->trees[k], 5), rd < TREE_NEAR ? 0 : 1, rd);
+                placeTree(c, &j->d, &j->f, &j->m, tr->type == 0 ? 0 : tr->type, p, Hash2(c->trees[k], 5), rd < TREE_NEAR ? 0 : 1, rd);
             }
             j->phase = 6;
             return true;
@@ -1117,7 +1203,8 @@ static void jobUpload(BuildJob *j)
     c->road = j->r.count ? MB_Upload(&j->r) : (Mesh){ 0 };
     c->detail = j->d.count ? MB_Upload(&j->d) : (Mesh){ 0 };
     c->foliage = j->f.count ? MB_Upload(&j->f) : (Mesh){ 0 };
-    GB_Free(&j->t); MB_Free(&j->r); MB_Free(&j->d); MB_Free(&j->f);
+    c->models = j->m.count ? MB_Upload(&j->m) : (Mesh){ 0 };
+    GB_Free(&j->t); MB_Free(&j->r); MB_Free(&j->d); MB_Free(&j->f); MB_Free(&j->m);
     c->built = true;
     c->shownAt = GetTime();
     j->active = false;
@@ -1156,7 +1243,8 @@ static void unloadChunk(Chunk *c)
     if (c->road.vertexCount) UnloadMesh(c->road);
     if (c->detail.vertexCount) UnloadMesh(c->detail);
     if (c->foliage.vertexCount) UnloadMesh(c->foliage);
-    c->terrain = c->road = c->detail = c->foliage = (Mesh){ 0 };
+    if (c->models.vertexCount) UnloadMesh(c->models);
+    c->terrain = c->road = c->detail = c->foliage = c->models = (Mesh){ 0 };
     c->built = false;
     c->nObs = 0;
 }
@@ -1247,9 +1335,10 @@ static void buildMid(void)
 }
 
 // ------------------------------------------------------------------ init
-void SceneInit(void)
+void SceneInit(const char *treesBinPath, const char *treesPngPath)
 {
     TexturesInit(gQuality);
+    loadPack(treesBinPath, treesPngPath);
     matFlat = LoadMaterialDefault();
     matFlat.shader = gLit;
     matTerrain = LoadMaterialDefault();
@@ -1272,6 +1361,12 @@ void SceneInit(void)
     matDepthCut = LoadMaterialDefault();
     matDepthCut.shader = gDepthCut;
     matDepthCut.maps[0].texture = Tex(TEX_LEAVES);
+    matModels = LoadMaterialDefault();
+    matModels.shader = gLitCut;
+    matModels.maps[0].texture = packTex;
+    matDepthModels = LoadMaterialDefault();
+    matDepthModels.shader = gDepthCut;
+    matDepthModels.maps[0].texture = packTex;
 
     gx0 = W.dem.x0; gz0 = W.dem.z0; gcell = W.dem.cell;
     gnx = W.dem.nx - 1; gnz = W.dem.nz - 1;
@@ -1428,10 +1523,10 @@ void SceneShutdown(void)
         cp_thread_join(worker);
         worker = NULL;
         workerOn = false;
-        if (jobChunk >= 0 && jobDone) { GB_Free(&bgJob.t); MB_Free(&bgJob.r); MB_Free(&bgJob.d); MB_Free(&bgJob.f); }
+        if (jobChunk >= 0 && jobDone) { GB_Free(&bgJob.t); MB_Free(&bgJob.r); MB_Free(&bgJob.d); MB_Free(&bgJob.f); MB_Free(&bgJob.m); }
         jobChunk = -1; jobDone = false;
     }
-    if (fgJob.active) { GB_Free(&fgJob.t); MB_Free(&fgJob.r); MB_Free(&fgJob.d); MB_Free(&fgJob.f); fgJob.active = false; fgChunk = -1; }
+    if (fgJob.active) { GB_Free(&fgJob.t); MB_Free(&fgJob.r); MB_Free(&fgJob.d); MB_Free(&fgJob.f); MB_Free(&fgJob.m); fgJob.active = false; fgChunk = -1; }
     for (int i = 0; i < nChunks; i++) {
         unloadChunk(&chunks[i]);
         free(chunks[i].obs); free(chunks[i].bld); free(chunks[i].pcs); free(chunks[i].trees);
@@ -1442,6 +1537,10 @@ void SceneShutdown(void)
     free(chunks); free(owner); free(cdist); free(mask); free(pieces);
     chunks = NULL; pieces = NULL; nPieces = 0;
     TexturesShutdown();
+    if (packTex.id) UnloadTexture(packTex);
+    packTex = (Texture2D){ 0 };
+    if (packData) UnloadFileData(packData);
+    packData = NULL; nPack = 0;
 }
 
 static float boxDist2D(const BoundingBox *b, Vector3 p)
@@ -1589,6 +1688,12 @@ void SceneDraw(Camera3D cam)
         RenderSetRise(riseOf(c, now));
         DrawMesh(c->foliage, matFoliage, MatrixIdentity());
     }
+    for (int i = 0; i < nChunks; i++) {
+        Chunk *c = &chunks[i];
+        if (!c->models.vertexCount || !chunkVisible(c, cam, fwd)) continue;
+        RenderSetRise(riseOf(c, now));
+        DrawMesh(c->models, matModels, MatrixIdentity());
+    }
     rlEnableBackfaceCulling();
     RenderSetRise(1.0f);
 }
@@ -1605,8 +1710,9 @@ void SceneDrawShadow(Vector3 centre, float radius)
     rlDisableBackfaceCulling();
     for (int i = 0; i < nChunks; i++) {
         Chunk *c = &chunks[i];
-        if (!c->built || !c->foliage.vertexCount || boxDist2D(&c->box, centre) > radius) continue;
-        DrawMesh(c->foliage, matDepthCut, MatrixIdentity());
+        if (!c->built || boxDist2D(&c->box, centre) > radius) continue;
+        if (c->foliage.vertexCount) DrawMesh(c->foliage, matDepthCut, MatrixIdentity());
+        if (c->models.vertexCount) DrawMesh(c->models, matDepthModels, MatrixIdentity());
     }
     rlEnableBackfaceCulling();
 }
@@ -1620,7 +1726,7 @@ void SceneStats(int *loaded, long *verts, long *bytes)
         const Chunk *c = &chunks[i];
         if (!c->built) continue;
         n++;
-        long cv = c->terrain.vertexCount + c->road.vertexCount + c->detail.vertexCount + c->foliage.vertexCount;
+        long cv = c->terrain.vertexCount + c->road.vertexCount + c->detail.vertexCount + c->foliage.vertexCount + c->models.vertexCount;
         v += cv;
         by += cv * VB + (long)c->terrain.triangleCount * 3 * 2;
     }

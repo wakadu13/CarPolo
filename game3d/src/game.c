@@ -919,7 +919,11 @@ int GameRun(void)
     RenderInit();
     CarInitShared();
     SceneSetQuality(G.quality);
-    SceneInit();
+    {
+        char treesBin[1024];
+        snprintf(treesBin, sizeof(treesBin), "%s", AssetPath("trees.bin"));
+        SceneInit(treesBin, AssetPath("trees.png"));
+    }
     RenderSetShadows(G.quality == 2);
     SignsInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();

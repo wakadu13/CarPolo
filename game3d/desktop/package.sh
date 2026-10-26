@@ -15,7 +15,7 @@ BUILD_NUMBER="${BUILD_NUMBER:-1}"
 
 copy_assets() {   # $1 = destination directory
     mkdir -p "$1"
-    cp "$GAME/assets/world.bin" "$GAME/assets/font.ttf" "$GAME/assets/font-OFL.txt" "$GAME/assets/icon.png" "$1/"
+    cp "$GAME/assets/world.bin" "$GAME/assets/font.ttf" "$GAME/assets/font-OFL.txt" "$GAME/assets/icon.png" "$GAME/assets/trees.bin" "$GAME/assets/trees.png" "$1/"
 }
 
 case "$PLATFORM" in

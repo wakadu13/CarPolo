@@ -88,7 +88,11 @@ PAINT/GLASS/CHROME, emissive-ish lights), choosing parameters from the material 
   stucco, roof tiles, bark, concrete) plus a foliage atlas with alpha. Vertex contract (`render.h`):
   `texcoord` = uv in texture tiles, `texcoord2.x` = material id 0..3 (fractions blend the four
   textures), `texcoord2.y` = 1 for flat vertex-coloured surfaces, `color.rgb` = tint, `color.a` = opacity.
-  Foliage (leaf cards) is a separate alpha-tested, two-sided mesh per chunk (`gLitCut`).
+  Foliage (leaf cards) is a separate alpha-tested, two-sided mesh per chunk (`gLitCut`); a fourth
+  per-chunk mesh holds instances of the low-poly model pack (`assets/trees.bin`, format in
+  `tools/treepack.py`), used only within 90 m of the road because each model is 2-5k vertices.
+- Sun shadows: orthographic 340 m shadow map centred 70 m ahead of the car, depth packed in RGB
+  (works on GLES2/WebGL1), PCF on desktop, sampled on texture unit 7 by the lit shaders.
 - Terrain chunks are indexed (16-bit, shared vertices on a half-cell grid); the rest stays non-indexed.
   A 40 m "mid" corridor mesh and the 300 m far mesh (flat colours) are always drawn under the chunks,
   so streaming never shows holes; new chunk details rise from the ground over 1.5 s (`rise` uniform).

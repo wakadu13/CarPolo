@@ -55,7 +55,10 @@ L'APK est reconstruit automatiquement par GitHub Actions à chaque modification 
 - **Graphismes léger/normal/élevé** : réglage dans le menu (léger pour les téléphones modestes).
 - **Rendu** : textures procédurales (herbe, garrigue, calcaire, bitume, gravier, enduits, tuiles canal,
   écorce) générées au lancement, arbres faits d'un tronc texturé et de « cartes » de feuillage (pins
-  d'Alep, chênes, oliviers, cyprès, platanes), brume atmosphérique jusqu'à l'horizon (30 km).
+  d'Alep, chênes, oliviers, cyprès, platanes), pack de modèles low-poly (`assets/trees.bin` + `trees.png`,
+  construit par `tools/treepack.py` à partir du pack d'arbres fourni) pour les arbres isolés près de la
+  route, les arbres des villages, les rochers et les arbres morts de la garrigue ; ombres portées du
+  soleil (qualité « élevé »), brume atmosphérique jusqu'à l'horizon (30 km).
 
 ## D'où viennent les données
 
@@ -90,6 +93,7 @@ Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/
 | `scene.c` | monde en tronçons de 100 m générés en arrière-plan : terrain adapté à la route, marquage, balises J6, lampadaires, glissières, ponts, végétation, bâtiments, routes voisines, horizon |
 | `render.c` | shaders d'éclairage (4 textures mélangées par sommet, variante feuillage à test alpha, soleil d'après-midi, brume), ciel, constructeurs de maillages |
 | `textures.c` | textures procédurales répétables + atlas de feuillage (mipmaps à couverture constante) |
+| `tools/treepack.py` | convertit un pack d'arbres OBJ + PNG en `assets/trees.bin` (sommets 16 bits) + atlas `trees.png` ; `tools/treeview.c` les affiche |
 | `car_model.c` | modèles 3D procéduraux : C4 Cactus + 5 véhicules du trafic |
 | `car.c` | physique de la voiture (adhérence, sous-virage, aide à la direction, suspension) |
 | `traffic.c` | trafic (limitations réelles, distances de sécurité, voies, circulation en face) |

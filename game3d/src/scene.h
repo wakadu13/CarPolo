@@ -9,7 +9,7 @@
 
 typedef struct { float x, z, r; unsigned char kind; } Obstacle; // kind: 0 tree, 1 building, 2 pole, 3 barrier
 
-void  SceneInit(void);                         // after WorldLoad + RenderInit
+void  SceneInit(const char *treesBinPath, const char *treesPngPath);   // after WorldLoad + RenderInit (model pack paths)
 void  SceneShutdown(void);
 // Streams chunks around 'focus'. budgetMs > 0: build on this thread for at most that long (loading
 // screen); -1: background thread (or a short slice per frame on platforms without threads).
