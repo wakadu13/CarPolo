@@ -257,6 +257,9 @@ static void LoadSave(void)
     }
 #if defined(PLATFORM_WEB)
     if (!ok) G.quality = 1;      // browsers: start at "normal", the menu can raise it
+#elif !defined(PLATFORM_ANDROID)
+    const char *q = getenv("CARPOLO_QUALITY");     // tests: force a graphics level
+    if (q && *q) G.quality = atoi(q) < 0 ? 0 : atoi(q) > 2 ? 2 : atoi(q);
 #endif
 }
 

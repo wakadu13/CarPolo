@@ -139,7 +139,7 @@ jobs:
           if grep -q "ADD_ATTRIB(NSOpenGLPFAAccelerated)" "$nsgl"; then echo "::warning title=macOS smoke test::could not patch GLFW"; exit 0; fi
           if ! cmake --build build-sw -j4 > build-sw.log 2>&1; then tail -30 build-sw.log; echo "::warning title=macOS smoke test::test build failed"; exit 0; fi
           mkdir -p smoke && cd smoke
-          CARPOLO_TEST=1 ../game3d/build-bin/carpolo3d > log.txt 2>&1 &
+          CARPOLO_QUALITY=1 CARPOLO_TEST=1 ../game3d/build-bin/carpolo3d > log.txt 2>&1 &     # no shadow map on the software renderer
           pid=$!
           for i in $(seq 1 240); do sleep 5; grep -q "TEST: done" log.txt && break; kill -0 $pid 2>/dev/null || break; done
           if kill -0 $pid 2>/dev/null; then kill $pid; status=running; else wait $pid; status="exit $?"; fi
