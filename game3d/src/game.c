@@ -771,7 +771,7 @@ static void DrawTitle(void)
     y += 36 * u;
     if (UIButton((Rectangle){ cx - 110 * u, y, 105 * u, 30 * u }, G.sound ? "Son : OUI" : "Son : NON", (Color){ 74, 140, 220, 255 }, 15 * u)) { G.sound = !G.sound; AudioSetEnabled(G.sound); WriteSave(); }
     static const char *qn[3] = { "Graph. : léger", "Graph. : normal", "Graph. : élevé" };
-    if (UIButton((Rectangle){ cx + 5 * u, y, 105 * u, 30 * u }, qn[G.quality], (Color){ 74, 140, 220, 255 }, 13 * u)) { G.quality = (G.quality + 1) % 3; SceneSetQuality(G.quality); WriteSave(); }
+    if (UIButton((Rectangle){ cx + 5 * u, y, 105 * u, 30 * u }, qn[G.quality], (Color){ 74, 140, 220, 255 }, 13 * u)) { G.quality = (G.quality + 1) % 3; SceneSetQuality(G.quality); RenderSetShadows(G.quality == 2); WriteSave(); }
     y += 40 * u;
     Text(G.bestTime > 0 ? TextFormat("Record : %s", FmtTime(G.bestTime)) : "Pas encore de record", cx, y, 15 * u, (Color){ 176, 48, 106, 255 }, 1);
 #if !defined(PLATFORM_ANDROID)
@@ -820,6 +820,15 @@ static void DrawResults(void)
 // ------------------------------------------------------------------ main loop
 static void Draw3D(void)
 {
+    if (RenderShadowsEnabled()) {
+        Vector3 f = { cosf(G.car.yaw), 0, sinf(G.car.yaw) };
+        Vector3 centre = Vector3Add(G.car.pos, Vector3Scale(f, 70.0f));
+        RenderShadowBegin(centre);
+        SceneDrawShadow(centre, RenderShadowRadius());
+        TrafficDraw(G.cam);
+        if (G.cactusReady) DrawCarModel(&G.cactus, CarMatrix(&G.car, true), G.car.wheelSpin, G.car.steerAngle, false);
+        RenderShadowEnd();
+    }
     BeginMode3D(G.cam);
     RenderSetFrame(G.cam, SceneQuality() == 2 ? 1.0f / 9000.0f : SceneQuality() == 1 ? 1.0f / 7000.0f : 1.0f / 5000.0f);
     SceneDraw(G.cam);
@@ -911,6 +920,7 @@ int GameRun(void)
     CarInitShared();
     SceneSetQuality(G.quality);
     SceneInit();
+    RenderSetShadows(G.quality == 2);
     SignsInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();
     G.cactusReady = true;
@@ -1056,6 +1066,12 @@ static void Frame(void)
         ClearBackground(FogColor());
         DrawSky(G.cam, GetScreenWidth(), GetScreenHeight());
         Draw3D();
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+        if (getenv("CARPOLO_DBGSHADOW") && RenderShadowsEnabled()) {
+            Texture2D st = RenderShadowTexture();
+            DrawTexturePro(st, (Rectangle){ 0, 0, (float)st.width, (float)-st.height }, (Rectangle){ 10, 90, 300, 300 }, (Vector2){ 0, 0 }, 0, WHITE);
+        }
+#endif
         if (G.state == ST_TITLE) DrawTitle();
         else {
             DrawHUD();
@@ -1063,10 +1079,19 @@ static void Frame(void)
             if ((G.state == ST_FINISH || G.state == ST_GAMEOVER) && G.stateT > 2.0f) DrawResults();
         }
         EndDrawing();
-#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+#if defined(PLATFORM_WEB)
+        (void)shot; (void)shotName;          // no screenshots in the browser
+#elif !defined(PLATFORM_ANDROID)
         if (shot && shotName) TakeScreenshot(shotName);
-#else
-        (void)shot; (void)shotName;
+        if (shot && getenv("CARPOLO_DBGSHADOW") && RenderShadowsEnabled()) {
+            Image im = LoadImageFromTexture(RenderShadowTexture());
+            int lo = 255, hi = 0; long sum = 0;
+            unsigned char *px = im.data;
+            for (int i = 0; i < im.width * im.height; i++) { int r = px[i * 4]; if (r < lo) lo = r; if (r > hi) hi = r; sum += r; }
+            TraceLog(LOG_INFO, "TEST: shadow map R min %d max %d mean %.1f (%dx%d, fmt %d)", lo, hi, (double)sum / (im.width * im.height), im.width, im.height, im.format);
+            ExportImage(im, "shadowmap.png");
+            UnloadImage(im);
+        }
 #endif
     }
 }

@@ -20,6 +20,7 @@ typedef struct {
 // gLit samples texture0..texture3 (Material maps ALBEDO, METALNESS, NORMAL, ROUGHNESS);
 // gLitCut is the alpha-tested variant for foliage cards (texture0 only, two-sided lighting).
 extern Shader gLit, gLitCut;
+extern Shader gDepth, gDepthCut;   // shadow-map pass (packed depth), plain and alpha-tested
 extern MatParams MAT_MATTE, MAT_ROAD, MAT_PAINT, MAT_GLASS, MAT_CHROME, MAT_PLASTIC, MAT_LIGHT, MAT_RUBBER;
 
 void RenderInit(void);
@@ -29,6 +30,15 @@ void RenderSetMat(MatParams m);
 void RenderSetMatEx(float spec, float shininess, float refl, float reflMin, float emissive);
 void RenderSetFog(float density);                       // exponential haze: 1 - exp(-dist * density)
 void RenderSetRise(float k);                            // 0..1: detail geometry rises from the ground (chunk fade-in)
+// Sun shadow map: render the casters between RenderShadowBegin/End with RenderLitShader() (= gDepth
+// during the pass), the lit shaders then sample it (texture unit 7).
+void     RenderSetShadows(bool on);
+bool     RenderShadowsEnabled(void);
+Camera3D RenderShadowBegin(Vector3 centre);              // orthographic light camera around 'centre'
+void     RenderShadowEnd(void);
+Shader   RenderLitShader(void);                          // gLit, or gDepth inside the shadow pass
+float    RenderShadowRadius(void);
+Texture2D RenderShadowTexture(void);                    // debug
 void DrawSky(Camera3D cam, int w, int h);
 Color FogColor(void);
 Vector3 SunDir(void);

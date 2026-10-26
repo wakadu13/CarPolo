@@ -4,9 +4,10 @@
 #include "rlgl.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 
-Shader gLit, gLitCut;
+Shader gLit, gLitCut, gDepth, gDepthCut;
 MatParams MAT_MATTE   = { 0.05f, 8.0f, 0.00f, 0.0f };
 MatParams MAT_ROAD    = { 0.10f, 20.0f, 0.04f, 0.0f };
 MatParams MAT_PAINT   = { 0.75f, 70.0f, 0.38f, 0.0f };
@@ -16,8 +17,12 @@ MatParams MAT_PLASTIC = { 0.15f, 20.0f, 0.06f, 0.0f };
 MatParams MAT_LIGHT   = { 0.80f, 80.0f, 0.30f, 0.55f };
 MatParams MAT_RUBBER  = { 0.04f, 6.0f, 0.00f, 0.0f };
 
-typedef struct { Shader sh; int view, fogCol, fogDen, mat, reflMin, rise; } LitShader;
+typedef struct { Shader sh; int view, fogCol, fogDen, mat, reflMin, rise, lightVP, shadowOn, shadowTexel; } LitShader;
 static LitShader L[2];
+static RenderTexture2D shadowRT;
+static bool shadowsOn, inShadowPass;
+static int shadowSize;
+static const float SHADOW_EXTENT = 340.0f;      // metres covered by the shadow map
 static Vector3 sunDir;
 static Color fogColor = { 196, 209, 224, 255 };
 
@@ -40,6 +45,8 @@ static const char *VS_BODY =
     "uniform mat4 matNormal;\n"
     "uniform vec3 viewPos;\n"
     "uniform float rise;\n"
+    "uniform mat4 lightVP;\n"
+    "varying vec4 vShadow;\n"
     "varying vec3 vView;\n"
     "varying vec3 vNormal;\n"
     "varying vec4 vColor;\n"
@@ -50,6 +57,7 @@ static const char *VS_BODY =
     "  lp.y -= (1.0 - rise) * 30.0;\n"
     "  vec4 wp = matModel * vec4(lp, 1.0);\n"
     "  vView = viewPos - wp.xyz;\n"
+    "  vShadow = lightVP * wp;\n"
     "  vNormal = (matNormal * vec4(vertexNormal, 0.0)).xyz;\n"
     "  vColor = vertexColor;\n"
     "  vUV = vertexTexCoord;\n"
@@ -58,6 +66,33 @@ static const char *VS_BODY =
     "}\n";
 
 static const char *FS_BODY =
+    "varying vec4 vShadow;\n"
+    "uniform sampler2D shadowMap;\n"
+    "uniform float shadowOn;\n"
+    "uniform float shadowTexel;\n"
+    "float shadowTap(vec2 uv, float d) {\n"
+    "  float sd = dot(texture2D(shadowMap, uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
+    "  return sd < d ? 0.0 : 1.0;\n"
+    "}\n"
+    "float shadowFactor(float ndl) {\n"
+    "  if (shadowOn < 0.5) return 1.0;\n"
+    "  vec3 sc = vShadow.xyz / vShadow.w * 0.5 + 0.5;\n"
+    "  vec2 e = abs(sc.xy - 0.5) * 2.0;\n"
+    "  float edge = 1.0 - smoothstep(0.75, 1.0, max(e.x, e.y));\n"
+    "  if (edge <= 0.0 || sc.z >= 1.0) return 1.0;\n"
+    "#ifdef FOLIAGE\n"
+    "  float d = sc.z - 0.0022;\n"
+    "#else\n"
+    "  float d = sc.z - (0.0006 + 0.0016 * (1.0 - ndl));\n"
+    "#endif\n"
+    "#ifdef PCF\n"
+    "  float t = shadowTexel * 0.6;\n"
+    "  float s = (shadowTap(sc.xy + vec2(-t, -t), d) + shadowTap(sc.xy + vec2(t, -t), d) + shadowTap(sc.xy + vec2(-t, t), d) + shadowTap(sc.xy + vec2(t, t), d)) * 0.25;\n"
+    "#else\n"
+    "  float s = shadowTap(sc.xy, d);\n"
+    "#endif\n"
+    "  return mix(1.0, s, edge);\n"
+    "}\n"
     "varying vec3 vView;\n"
     "varying vec3 vNormal;\n"
     "varying vec4 vColor;\n"
@@ -94,15 +129,17 @@ static const char *FS_BODY =
     "#ifdef FOLIAGE\n"
     "  // leaf cards: normals come from the crown shape; light passes through thin foliage\n"
     "  float ndl = max(dot(n, sunDir), 0.0) * 0.85 + max(-dot(n, sunDir), 0.0) * 0.30 + 0.12;\n"
-    "  vec3 amb = mix(groundColor, skyColor, n.y * 0.5 + 0.5) * 1.15;\n"
-    "  vec3 col = albedo.rgb * (amb + sunColor * ndl);\n"
+    "  float sh = shadowFactor(1.0);\n"
+    "  vec3 amb = mix(groundColor, skyColor, n.y * 0.5 + 0.5) * (1.0 + 0.15 * sh);\n"
+    "  vec3 col = albedo.rgb * (amb + sunColor * ndl * (0.15 + 0.85 * sh));\n"
     "#else\n"
     "  if (!gl_FrontFacing) n = -n;\n"
     "  float ndl = max(dot(n, sunDir), 0.0);\n"
+    "  float sh = shadowFactor(ndl);\n"
     "  vec3 amb = mix(groundColor, skyColor, n.y * 0.5 + 0.5);\n"
-    "  vec3 col = albedo.rgb * (amb + sunColor * ndl);\n"
+    "  vec3 col = albedo.rgb * (amb + sunColor * ndl * sh);\n"
     "  vec3 h = normalize(sunDir + v);\n"
-    "  float spec = pow(max(dot(n, h), 0.0), matParams.y) * matParams.x * step(0.001, ndl);\n"
+    "  float spec = pow(max(dot(n, h), 0.0), matParams.y) * matParams.x * step(0.001, ndl) * sh;\n"
     "  float fres = mix(reflMin, 1.0, pow(1.0 - max(dot(n, v), 0.0), 4.0));\n"
     "  vec3 r = reflect(-v, n);\n"
     "  vec3 env = mix(groundColor * 0.9, skyColor * 1.25, smoothstep(-0.15, 0.35, r.y));\n"
@@ -115,6 +152,35 @@ static const char *FS_BODY =
     "  vec3 fogC = fogColor + vec3(0.22, 0.15, 0.05) * sunAmt;\n"
     "  gl_FragColor = vec4(mix(col, fogC, fog), albedo.a);\n"
     "}\n";
+
+static const char *DEPTH_VS =
+    "attribute vec3 vertexPosition;\n"
+    "attribute vec2 vertexTexCoord;\n"
+    "uniform mat4 mvp;\n"
+    "varying vec2 vUV;\n"
+    "void main() { vUV = vertexTexCoord; gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
+static const char *DEPTH_FS =
+    "varying vec2 vUV;\n"
+    "uniform sampler2D texture0;\n"
+    "void main() {\n"
+    "#ifdef FOLIAGE\n"
+    "  if (texture2D(texture0, vUV).a < 0.5) discard;\n"
+    "#endif\n"
+    "  vec3 enc = fract(vec3(1.0, 255.0, 65025.0) * gl_FragCoord.z);\n"
+    "  enc -= enc.yzz * vec3(1.0 / 255.0, 1.0 / 255.0, 0.0);\n"
+    "  gl_FragColor = vec4(enc, 1.0);\n"
+    "}\n";
+
+static Shader loadDepth(const char *defines)
+{
+    char *vs = MemAlloc(4096), *fs = MemAlloc(4096);
+    strcpy(vs, VS_PREFIX); strcat(vs, defines); strcat(vs, DEPTH_VS);
+    strcpy(fs, FS_PREFIX); strcat(fs, defines); strcat(fs, DEPTH_FS);
+    Shader sh = LoadShaderFromMemory(vs, fs);
+    MemFree(vs); MemFree(fs);
+    sh.locs[SHADER_LOC_MAP_ALBEDO] = GetShaderLocation(sh, "texture0");
+    return sh;
+}
 
 static LitShader loadLit(const char *defines)
 {
@@ -138,6 +204,15 @@ static LitShader loadLit(const char *defines)
     s.mat = GetShaderLocation(s.sh, "matParams");
     s.reflMin = GetShaderLocation(s.sh, "reflMin");
     s.rise = GetShaderLocation(s.sh, "rise");
+    s.lightVP = GetShaderLocation(s.sh, "lightVP");
+    s.shadowOn = GetShaderLocation(s.sh, "shadowOn");
+    s.shadowTexel = GetShaderLocation(s.sh, "shadowTexel");
+    int unit = 7;
+    SetShaderValue(s.sh, GetShaderLocation(s.sh, "shadowMap"), &unit, SHADER_UNIFORM_INT);
+    float zero = 0.0f;
+    SetShaderValue(s.sh, s.shadowOn, &zero, SHADER_UNIFORM_FLOAT);
+    Matrix id = MatrixIdentity();
+    SetShaderValueMatrix(s.sh, s.lightVP, id);
 
     // Late-afternoon autumn sun from the south-west (+Z = south, -X = west)
     sunDir = Vector3Normalize((Vector3){ -0.55f, 0.62f, 0.56f });
@@ -157,15 +232,88 @@ static LitShader loadLit(const char *defines)
 
 void RenderInit(void)
 {
-    L[0] = loadLit("");
-    L[1] = loadLit("#define FOLIAGE\n");
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
+    const char *pcf = "";
+    shadowSize = 1024;
+#else
+    const char *pcf = "#define PCF\n";
+    shadowSize = 2048;
+#endif
+    char d0[64], d1[64];
+    snprintf(d0, sizeof(d0), "%s", pcf);
+    snprintf(d1, sizeof(d1), "#define FOLIAGE\n%s", pcf);
+    L[0] = loadLit(d0);
+    L[1] = loadLit(d1);
     gLit = L[0].sh;
     gLitCut = L[1].sh;
+    gDepth = loadDepth("");
+    gDepthCut = loadDepth("#define FOLIAGE\n");
     RenderSetMat(MAT_MATTE);
     RenderSetFog(1.0f / 9000.0f);
 }
 
-void RenderShutdown(void) { UnloadShader(gLit); UnloadShader(gLitCut); }
+void RenderShutdown(void)
+{
+    UnloadShader(gLit); UnloadShader(gLitCut); UnloadShader(gDepth); UnloadShader(gDepthCut);
+    if (shadowRT.id) UnloadRenderTexture(shadowRT);
+    shadowRT = (RenderTexture2D){ 0 };
+}
+
+// ---------------------------------------------------------------- shadows
+void RenderSetShadows(bool on)
+{
+    if (on && !shadowRT.id) {
+        shadowRT = LoadRenderTexture(shadowSize, shadowSize);
+        if (!shadowRT.id) { TraceLog(LOG_WARNING, "SHADOW: render texture unavailable, shadows off"); on = false; }
+        else {
+            SetTextureFilter(shadowRT.texture, TEXTURE_FILTER_POINT);
+            SetTextureWrap(shadowRT.texture, TEXTURE_WRAP_CLAMP);
+            float texel = 1.0f / shadowSize;
+            for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].shadowTexel, &texel, SHADER_UNIFORM_FLOAT);
+        }
+    }
+    shadowsOn = on;
+    float v = on ? 1.0f : 0.0f;
+    for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].shadowOn, &v, SHADER_UNIFORM_FLOAT);
+}
+
+bool RenderShadowsEnabled(void) { return shadowsOn && shadowRT.id; }
+float RenderShadowRadius(void) { return SHADOW_EXTENT * 0.72f; }
+Texture2D RenderShadowTexture(void) { return shadowRT.texture; }
+Shader RenderLitShader(void) { return inShadowPass ? gDepth : gLit; }
+
+Camera3D RenderShadowBegin(Vector3 centre)
+{
+    Camera3D lc = { 0 };
+    lc.position = Vector3Add(centre, Vector3Scale(sunDir, 600.0f));   // from the sun towards the centre
+    lc.target = centre;
+    lc.up = (Vector3){ 0, 1, 0 };
+    lc.fovy = SHADOW_EXTENT;
+    lc.projection = CAMERA_ORTHOGRAPHIC;
+    BeginTextureMode(shadowRT);
+    ClearBackground(WHITE);                 // depth 1 = nothing
+    rlSetClipPlanes(1.0, 1300.0);
+    BeginMode3D(lc);
+    // the lit shaders will need the same view-projection
+    Matrix view = MatrixLookAt(lc.position, lc.target, lc.up);
+    float top = SHADOW_EXTENT * 0.5f;
+    Matrix proj = MatrixOrtho(-top, top, -top, top, 1.0, 1300.0);
+    Matrix vp = MatrixMultiply(view, proj);
+    for (int i = 0; i < 2; i++) SetShaderValueMatrix(L[i].sh, L[i].lightVP, vp);
+    inShadowPass = true;
+    return lc;
+}
+
+void RenderShadowEnd(void)
+{
+    EndMode3D();
+    EndTextureMode();
+    rlSetClipPlanes(0.25, 30000.0);
+    inShadowPass = false;
+    rlActiveTextureSlot(7);
+    rlEnableTexture(shadowRT.texture.id);
+    rlActiveTextureSlot(0);
+}
 
 void RenderSetFrame(Camera3D cam, float fogDensity)
 {
@@ -491,7 +639,7 @@ Mesh GB_Upload(GridBuf *g)
     MemFree(m.colors); m.colors = NULL;
     MemFree(m.texcoords); m.texcoords = NULL;
     MemFree(m.texcoords2); m.texcoords2 = NULL;
-    MemFree(m.indices); m.indices = NULL;
+    // raylib's DrawMesh only uses glDrawElements while mesh.indices is non-NULL: keep that copy
     return m;
 }
 

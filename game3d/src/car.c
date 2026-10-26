@@ -219,7 +219,7 @@ void DrawCarModel(const CarModel *m, Matrix world, float wheelSpin, float steerA
         int mi = m->body.meshMaterial ? m->body.meshMaterial[i] : 0;
         setCarMat(m->bodyMatKind[mi], brakeLights);
         Material mat = m->body.materials[mi];
-        mat.shader = gLit;
+        mat.shader = RenderLitShader();
         DrawMesh(m->body.meshes[i], mat, world);
     }
     for (int w = 0; w < 4; w++) {
@@ -233,7 +233,7 @@ void DrawCarModel(const CarModel *m, Matrix world, float wheelSpin, float steerA
             int mi = m->wheel.meshMaterial ? m->wheel.meshMaterial[i] : 0;
             setCarMat(m->wheelMatKind[mi], false);
             Material mat = m->wheel.materials[mi];
-            mat.shader = gLit;
+            mat.shader = RenderLitShader();
             DrawMesh(m->wheel.meshes[i], mat, wm);
         }
     }

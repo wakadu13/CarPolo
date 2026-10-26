@@ -16,6 +16,7 @@ void  SceneShutdown(void);
 void  SceneUpdate(Vector3 focus, float budgetMs);
 float SceneProgress(Vector3 focus);            // 0..1: fraction of wanted chunks that are built
 void  SceneDraw(Camera3D cam);
+void  SceneDrawShadow(Vector3 centre, float radius);   // casters for the sun shadow map (depth shaders)
 
 // Terrain height with the road corridor flattened (same function used to build the meshes)
 float SceneGround(float x, float z, int routeHint);

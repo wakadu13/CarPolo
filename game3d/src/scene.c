@@ -55,7 +55,7 @@ static Mesh farMesh[16];
 static int nFar;
 static Mesh midMesh[32];
 static int nMid;
-static Material matFlat, matTerrain, matRoad, matDetail, matFoliage;
+static Material matFlat, matTerrain, matRoad, matDetail, matFoliage, matDepth, matDepthCut;
 
 // ------------------------------------------------------------------ small helpers
 static void pushInt(int **arr, int *n, int *cap, int v)
@@ -1152,7 +1152,7 @@ static void *workerMain(void *arg)
 
 static void unloadChunk(Chunk *c)
 {
-    if (c->terrain.vertexCount) UnloadMesh(c->terrain);
+    if (c->terrain.vertexCount) UnloadMesh(c->terrain);     // also frees the kept index copy
     if (c->road.vertexCount) UnloadMesh(c->road);
     if (c->detail.vertexCount) UnloadMesh(c->detail);
     if (c->foliage.vertexCount) UnloadMesh(c->foliage);
@@ -1267,6 +1267,11 @@ void SceneInit(void)
     matFoliage = LoadMaterialDefault();
     matFoliage.shader = gLitCut;
     matFoliage.maps[0].texture = Tex(TEX_LEAVES);
+    matDepth = LoadMaterialDefault();
+    matDepth.shader = gDepth;
+    matDepthCut = LoadMaterialDefault();
+    matDepthCut.shader = gDepthCut;
+    matDepthCut.maps[0].texture = Tex(TEX_LEAVES);
 
     gx0 = W.dem.x0; gz0 = W.dem.z0; gcell = W.dem.cell;
     gnx = W.dem.nx - 1; gnz = W.dem.nz - 1;
@@ -1586,6 +1591,24 @@ void SceneDraw(Camera3D cam)
     }
     rlEnableBackfaceCulling();
     RenderSetRise(1.0f);
+}
+
+// shadow casters around 'centre' (terrain, buildings/trunks, foliage) with the depth shaders
+void SceneDrawShadow(Vector3 centre, float radius)
+{
+    for (int i = 0; i < nChunks; i++) {
+        Chunk *c = &chunks[i];
+        if (!c->built || boxDist2D(&c->box, centre) > radius) continue;
+        if (c->terrain.vertexCount) DrawMesh(c->terrain, matDepth, MatrixIdentity());
+        if (c->detail.vertexCount) DrawMesh(c->detail, matDepth, MatrixIdentity());
+    }
+    rlDisableBackfaceCulling();
+    for (int i = 0; i < nChunks; i++) {
+        Chunk *c = &chunks[i];
+        if (!c->built || !c->foliage.vertexCount || boxDist2D(&c->box, centre) > radius) continue;
+        DrawMesh(c->foliage, matDepthCut, MatrixIdentity());
+    }
+    rlEnableBackfaceCulling();
 }
 
 void SceneStats(int *loaded, long *verts, long *bytes)
