@@ -150,11 +150,8 @@ void SignsInit(Font font, bool fontOk)
         }
         i = j;
     }
-    // --- start panel and arrival panel
-    Texture2D tStart = panelTexture(font, fontOk, "DÉPART", "2000 chemin départemental 15", (Color){ 32, 110, 130, 255 });
-    addSign(&posts, tStart, 12.0f, 1, 2.6f, 1.3f, 1.2f);
-    Texture2D tEnd = panelTexture(font, fontOk, "ARRIVÉE", "CarPolo 3D", (Color){ 200, 40, 40, 255 });
-    addSign(&posts, tEnd, W.length - 16.0f, 1, 2.6f, 1.3f, 1.2f);
+    // (start and finish are marked by the course arches, see course.c)
+    (void)panelTexture;
 
     // --- 3D markers: start disc (white with grey ring) and the red map pin at the arrival
     {
@@ -169,9 +166,10 @@ void SignsInit(Font font, bool fontOk)
     }
     {
         Vector3 p; float hx, hz, w;
-        RouteSample(W.length - 2.0f, &p, &hx, &hz, &w, NULL);
-        float d = w * 0.5f + 4.0f;
-        Vector3 b = { p.x - hz * d, p.y - 0.2f, p.z + hx * d };
+        RouteSample(W.length - 1.0f, &p, &hx, &hz, &w, NULL);
+        float d = w * 0.5f + 9.5f;          // beside the finish arch and its crowd
+        Vector3 b = { p.x - hz * d, 0, p.z + hx * d };
+        b.y = SceneGround(b.x, b.z, W.nRoute - 1) - 0.2f;
         Color red = { 234, 67, 53, 255 };
         MB_Cylinder(&posts, b, 0.0f, 1.25f, 4.2f, 16, red, false);                        // the point
         MB_Blob(&posts, (Vector3){ b.x, b.y + 4.6f, b.z }, (Vector3){ 1.55f, 1.55f, 1.55f }, 6, red, 0, 7);

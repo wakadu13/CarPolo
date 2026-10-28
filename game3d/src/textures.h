@@ -21,5 +21,6 @@ void      TexturesShutdown(void);
 Texture2D Tex(int id);
 Rectangle LeafUV(int kind);
 void      TexturesExport(const char *dir);    // debug: writes <dir>/tex_*.png
+Texture2D TexLoadCutout(Image im);            // alpha-tested texture (colour bleeding + coverage mips); modifies im
 
 #endif

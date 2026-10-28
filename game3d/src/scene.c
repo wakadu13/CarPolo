@@ -25,6 +25,7 @@ static float LOAD_RADIUS = 1200.0f, DRAW_RADIUS = 1450.0f, TREE_NEAR = 110.0f, T
 static int gQuality = 1;
 
 typedef struct { int road, a, b; } RoadPiece;
+typedef struct { float x, y, z, yaw, h; unsigned char model; Color tint; } TreeInst;   // one model of the pack
 
 typedef struct {
     int id;
@@ -35,7 +36,8 @@ typedef struct {
     BoundingBox box;
     bool built;
     double shownAt;
-    Mesh terrain, road, detail, foliage, models;
+    Mesh terrain, road, detail, foliage, models;      // models = impostor cards of the pack trees
+    TreeInst *inst; int nInst, capInst;
     Obstacle *obs; int nObs, capObs;
     int *bld; int nBld, capBld;
     int *pcs; int nPcs, capPcs;
@@ -55,17 +57,26 @@ static Mesh farMesh[16];
 static int nFar;
 static Mesh midMesh[32];
 static int nMid;
-static Material matFlat, matTerrain, matRoad, matDetail, matFoliage, matDepth, matDepthCut, matModels, matDepthModels;
+static Material matFlat, matTerrain, matRoad, matDetail, matFoliage, matDepth, matDepthCut;
+static Material matInst, matInstFallback, matImp, matDepthInst, matDepthImp, matDepthPack;
 
-// ---- low-poly model pack (assets/trees.bin + trees.png, see tools/treepack.py): used sparingly,
-// each model is 2-5k vertices (roadside trees, village trees, rocks); the mass is procedural.
+// ---- low-poly model pack (assets/trees.bin + trees.png, see tools/treepack.py). Each model is a
+// 2-5k vertex mesh uploaded once; trees close to the camera are drawn with GPU instancing (one draw
+// per model), farther ones as two crossed "impostor" cards baked at start-up from the model itself.
 typedef struct { char name[32]; float height, radius; int nv; const unsigned char *v; } PackModel;
 enum { PM_SPRUCE_A = 0, PM_SPRUCE_B, PM_BROAD_A, PM_BROAD_B, PM_BIRCH, PM_OAK, PM_POPLAR, PM_BIRCH_B, PM_DEAD, PM_STUMP, PM_SPRUCE_C, PM_SPRUCE_D, PM_ROCK, PM_COUNT };
 static PackModel packModels[PM_COUNT];
 static int nPack;
 static unsigned char *packData;
-static Texture2D packTex;
-#define MODEL_RANGE 90.0f      // metres from the road within which the models replace the leaf cards
+static Texture2D packTex, impTex;
+static Mesh packMesh[PM_COUNT];          // unit height, base at y = 0
+static float packHalf[PM_COUNT];         // impostor card half size, in model heights
+static Rectangle impRect[PM_COUNT][2];   // impostor views: 0 seen from +z, 1 seen from +x
+// per-frame lists of the instances drawn as real models
+static Matrix *nearBuf[PM_COUNT];
+static int nearCnt[PM_COUNT], nearCap[PM_COUNT];
+static float nearCut = 80.0f, nearTarget = 80.0f;
+static int nearTotal;
 
 // ------------------------------------------------------------------ small helpers
 static void pushInt(int **arr, int *n, int *cap, int v)
@@ -77,7 +88,7 @@ static void pushInt(int **arr, int *n, int *cap, int v)
 static void addObs(Chunk *c, float x, float z, float r, unsigned char kind)
 {
     if (c->nObs >= c->capObs) { c->capObs = c->capObs ? c->capObs * 2 : 64; c->obs = realloc(c->obs, sizeof(Obstacle) * c->capObs); }
-    c->obs[c->nObs++] = (Obstacle){ x, z, r, kind };
+    c->obs[c->nObs++] = (Obstacle){ x, z, r, kind, -1 };
 }
 
 static inline int cellIndex(float x, float z, int *ci, int *cj)
@@ -185,37 +196,110 @@ static void loadPack(const char *binPath, const char *pngPath)
         nPack = i + 1;
     }
     Image im = LoadImage(pngPath);
-    if (im.data) { packTex = LoadTextureFromImage(im); UnloadImage(im); GenTextureMipmaps(&packTex);
-#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
-        SetTextureFilter(packTex, TEXTURE_FILTER_ANISOTROPIC_8X);
+    if (im.data) { packTex = TexLoadCutout(im); UnloadImage(im); }
+    else { TraceLog(LOG_WARNING, "MODELS: %s missing, model pack disabled", pngPath); nPack = 0; return; }
+    // GPU meshes, unit height
+    for (int i = 0; i < nPack; i++) {
+        const PackModel *pm = &packModels[i];
+        MeshBuf b;
+        MB_Init(&b, pm->nv);
+        MB_Mat(&b, 0, 0, 0);
+        float sc = 1.0f / 32767.0f;
+        Vector3 P[3], N[3]; Vector2 T[3];
+        for (int k = 0; k + 2 < pm->nv; k += 3) {
+            for (int q = 0; q < 3; q++) {
+                const unsigned char *v = pm->v + (size_t)(k + q) * 14;
+                int16_t px, py, pz; memcpy(&px, v, 2); memcpy(&py, v + 2, 2); memcpy(&pz, v + 4, 2);
+                uint16_t tu, tv; memcpy(&tu, v + 10, 2); memcpy(&tv, v + 12, 2);
+                P[q] = vec(px * sc, py * sc, pz * sc);
+                N[q] = Vector3Normalize(vec((int8_t)v[6] / 127.0f, (int8_t)v[7] / 127.0f, (int8_t)v[8] / 127.0f));
+                T[q] = uv2(tu / 65535.0f, tv / 65535.0f);
+            }
+            MB_TriUV(&b, P[0], P[1], P[2], N[0], N[1], N[2], WHITE, WHITE, WHITE, T[0], T[1], T[2]);
+        }
+        packMesh[i] = MB_Upload(&b);
+        MB_Free(&b);
+        float rr = pm->height > 0 ? pm->radius / pm->height : 0.5f;
+        packHalf[i] = fmaxf(0.5f, rr) * 1.04f;
+    }
+    // impostor atlas: every model seen from the front and from the side, unlit albedo
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
+    int tile = 128;
+#else
+    int tile = gQuality == 0 ? 128 : 256;
 #endif
-        SetTextureWrap(packTex, TEXTURE_WRAP_CLAMP); }
-    else { TraceLog(LOG_WARNING, "MODELS: %s missing, model pack disabled", pngPath); nPack = 0; }
-    TraceLog(LOG_INFO, "MODELS: %d low-poly models loaded", nPack);
+    int cols = 8, rows = 1;
+    while (cols * rows < nPack * 2) rows *= 2;
+    RenderTexture2D rt = LoadRenderTexture(tile, tile);
+    Image atlas = GenImageColor(cols * tile, rows * tile, BLANK);
+    Material bake = LoadMaterialDefault();
+    bake.shader = gUnlitCut;
+    bake.maps[0].texture = packTex;
+    for (int i = 0; i < nPack; i++) {
+        for (int v = 0; v < 2; v++) {
+            int k = i * 2 + v;
+            float a = packHalf[i];
+            Camera3D cam = { 0 };
+            cam.target = vec(0, 0.5f, 0);
+            cam.position = v == 0 ? vec(0, 0.5f, 20) : vec(20, 0.5f, 0);
+            cam.up = vec(0, 1, 0);
+            cam.fovy = 2 * a;
+            cam.projection = CAMERA_ORTHOGRAPHIC;
+            BeginTextureMode(rt);
+            ClearBackground(BLANK);
+            rlSetClipPlanes(1.0, 60.0);
+            BeginMode3D(cam);
+            rlDisableBackfaceCulling();
+            DrawMesh(packMesh[i], bake, MatrixIdentity());
+            rlEnableBackfaceCulling();
+            EndMode3D();
+            EndTextureMode();
+            Image view = LoadImageFromTexture(rt.texture);
+            ImageFlipVertical(&view);
+            float ox = (float)((k % cols) * tile), oy = (float)((k / cols) * tile);
+            ImageDraw(&atlas, view, (Rectangle){ 0, 0, (float)tile, (float)tile }, (Rectangle){ ox, oy, (float)tile, (float)tile }, WHITE);
+            UnloadImage(view);
+            float W = (float)(cols * tile), H = (float)(rows * tile);
+            impRect[i][v] = (Rectangle){ (ox + 1) / W, (oy + 1) / H, (tile - 2) / W, (tile - 2) / H };
+        }
+    }
+    rlSetClipPlanes(RENDER_NEAR, RENDER_FAR);
+    UnloadRenderTexture(rt);
+    MemFree(bake.maps);           // not UnloadMaterial: it would unload the shared shader and texture
+    impTex = TexLoadCutout(atlas);
+    UnloadImage(atlas);
+    TraceLog(LOG_INFO, "MODELS: %d low-poly models loaded, impostors %dx%d", nPack, cols * tile, rows * tile);
 }
 
-static bool packOk(int idx) { return gQuality > 0 && idx < nPack && packTex.id != 0; }
+static bool packOk(int idx) { return idx < nPack && packTex.id != 0 && impTex.id != 0; }
 
-// one instance of a pack model: h = height in metres, yaw around Y, tint multiplied with its texture
-static void placeModel(MeshBuf *m, int idx, Vector3 p, float h, float yaw, Color tint)
+static Matrix instMatrix(const TreeInst *t)
 {
-    const PackModel *pm = &packModels[idx];
-    float s = h / 32767.0f, cs = cosf(yaw), sn = sinf(yaw);
-    MB_Mat(m, 0, 0, 0);
-    Vector3 P[3], N[3]; Vector2 T[3];
-    for (int k = 0; k + 2 < pm->nv; k += 3) {
-        for (int q = 0; q < 3; q++) {
-            const unsigned char *v = pm->v + (size_t)(k + q) * 14;
-            int16_t px, py, pz; memcpy(&px, v, 2); memcpy(&py, v + 2, 2); memcpy(&pz, v + 4, 2);
-            int8_t nx = (int8_t)v[6], ny = (int8_t)v[7], nz = (int8_t)v[8];
-            uint16_t tu, tv; memcpy(&tu, v + 10, 2); memcpy(&tv, v + 12, 2);
-            float x = px * s, y = py * s, z = pz * s;
-            P[q] = vec(p.x + x * cs - z * sn, p.y + y, p.z + x * sn + z * cs);
-            float fx = nx / 127.0f, fz = nz / 127.0f;
-            N[q] = vec(fx * cs - fz * sn, ny / 127.0f, fx * sn + fz * cs);
-            T[q] = uv2(tu / 65535.0f, tv / 65535.0f);
-        }
-        MB_TriUV(m, P[0], P[1], P[2], N[0], N[1], N[2], tint, tint, tint, T[0], T[1], T[2]);
+    return MatrixMultiply(MatrixMultiply(MatrixScale(t->h, t->h, t->h), MatrixRotateY(t->yaw)), MatrixTranslate(t->x, t->y, t->z));
+}
+
+// one pack tree: instance for the near model + two impostor cards for the distance
+static void addInst(Chunk *c, MeshBuf *imp, int model, Vector3 p, float h, float yaw, Color tint)
+{
+    if (c->nInst >= c->capInst) { c->capInst = c->capInst ? c->capInst * 2 : 64; c->inst = realloc(c->inst, sizeof(TreeInst) * c->capInst); }
+    TreeInst *t = &c->inst[c->nInst++];
+    *t = (TreeInst){ p.x, p.y, p.z, yaw, h, (unsigned char)model, tint };
+    Matrix m = instMatrix(t);
+    float a = packHalf[model];
+    MB_Mat(imp, p.x, p.z, 0);            // texcoord2 = tree position (impostor near cut-off)
+    for (int v = 0; v < 2; v++) {
+        Rectangle r = impRect[model][v];
+        // model-space corners: card in the z = 0 plane (view 0) or x = 0 plane (view 1, its right is -z)
+        Vector3 c0 = v == 0 ? vec(-a, 0.5f - a, 0) : vec(0, 0.5f - a, a);
+        Vector3 c1 = v == 0 ? vec(a, 0.5f - a, 0) : vec(0, 0.5f - a, -a);
+        Vector3 c2 = v == 0 ? vec(a, 0.5f + a, 0) : vec(0, 0.5f + a, -a);
+        Vector3 c3 = v == 0 ? vec(-a, 0.5f + a, 0) : vec(0, 0.5f + a, a);
+        Vector3 w0 = Vector3Transform(c0, m), w1 = Vector3Transform(c1, m), w2 = Vector3Transform(c2, m), w3 = Vector3Transform(c3, m);
+        Vector3 out = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(w1, w0), Vector3Subtract(w3, w0)));
+        Vector3 n = Vector3Normalize(vec(out.x * 0.35f, 0.9f, out.z * 0.35f));
+        Vector2 t0 = uv2(r.x, r.y + r.height), t1 = uv2(r.x + r.width, r.y + r.height), t2 = uv2(r.x + r.width, r.y), t3 = uv2(r.x, r.y);
+        MB_TriUV(imp, w0, w1, w2, n, n, n, tint, tint, tint, t0, t1, t2);
+        MB_TriUV(imp, w0, w2, w3, n, n, n, tint, tint, tint, t0, t2, t3);
     }
 }
 
@@ -478,15 +562,26 @@ static void placeTree(Chunk *c, MeshBuf *d, MeshBuf *f, MeshBuf *m, int type, Ve
 {
     unsigned s = seed;
     float h;
-    // broadleaf trees close to the road: low-poly models from the pack (planes stay big and autumnal)
-    if (m && lod == 0 && routeDist < MODEL_RANGE && (type == 0 || type == 1) && packOk(PM_OAK)) {
-        float r = Rand01(&s);
-        int idx = type == 1 ? PM_OAK : (r < 0.4f ? PM_BROAD_B : r < 0.7f ? PM_BROAD_A : PM_OAK);
-        h = type == 1 ? 13 + Rand01(&s) * 5 : 6.5f + Rand01(&s) * 3.5f;
-        Color tint = type == 1 ? ColorJitter((Color){ 232, 216, 160, 255 }, seed, 16) : ColorJitter((Color){ 186, 198, 164, 255 }, seed, 18);
-        placeModel(m, idx, p, h, Rand01(&s) * 2 * PI, tint);
-        if (routeDist < 60) addObs(c, p.x, p.z, type == 1 ? 0.55f : 0.45f, 0);
-        return;
+    // models from the pack: all the broadleaf trees (oaks, planes), cypresses (narrow poplar model)
+    // and a third of the pines; Aleppo pines and olives keep their procedural shapes
+    if (m && packOk(PM_OAK)) {
+        float r = Rand01(&s), r2 = Rand01(&s);
+        int idx = -1;
+        Color tn = WHITE;
+        switch (type) {
+        case 1: idx = PM_OAK; h = 13 + r2 * 5; tn = ColorJitter((Color){ 236, 218, 162, 255 }, seed, 16); break;   // plane: big, autumnal
+        case 2: if (r < 0.34f) { idx = r < 0.17f ? PM_SPRUCE_A : PM_SPRUCE_C; h = 9 + r2 * 6; tn = ColorJitter((Color){ 176, 196, 160, 255 }, seed, 14); } break;
+        case 3: idx = PM_POPLAR; h = 9 + r2 * 6; tn = ColorJitter((Color){ 120, 150, 112, 255 }, seed, 10); break;  // cypress silhouette
+        case 4: break;                                                                                             // olive: procedural
+        case 5: idx = r < 0.5f ? PM_BIRCH : PM_BIRCH_B; h = 7 + r2 * 4; tn = ColorJitter((Color){ 210, 220, 180, 255 }, seed, 14); break;
+        default: idx = r < 0.4f ? PM_OAK : r < 0.7f ? PM_BROAD_A : PM_BROAD_B; h = 6.5f + r2 * 3.5f;
+                 tn = ColorJitter(r2 < 0.2f ? (Color){ 224, 210, 150, 255 } : (Color){ 190, 204, 162, 255 }, seed, 18); break;
+        }
+        if (idx >= 0 && packOk(idx)) {
+            addInst(c, m, idx, vec(p.x, p.y - 0.1f, p.z), h, Rand01(&s) * 2 * PI, tn);
+            if (routeDist < 60) addObs(c, p.x, p.z, type == 1 ? 0.55f : 0.45f, 0);
+            return;
+        }
     }
     switch (type) {
     case 1: h = 14 + Rand01(&s) * 6; treePlane(d, f, p, h, seed, lod); break;
@@ -632,9 +727,9 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, MeshBu
         Vector3 p = { px, groundC(c, px, pz, cd), pz };
         switch (cls) {
         case LC_FOREST:
-            if (lod == 2) { if (r3 < 0.45f) placeTree(c, d, f, NULL, r3 < 0.3f ? 2 : 0, p, seed, 2, cd); break; }
-            placeTree(c, d, f, NULL, r3 < 0.65f ? 2 : 0, p, seed, lod, cd);
-            if (lod == 0 && cd < 50 && Rand01(&s) < 0.03f && packOk(PM_STUMP)) placeModel(m, PM_STUMP, vec(px + 3, groundC(c, px + 3, pz, cd), pz), 0.9f, Rand01(&s) * 6, (Color){ 220, 210, 196, 255 });
+            if (lod == 2) { if (r3 < 0.45f) placeTree(c, d, f, m, r3 < 0.3f ? 2 : 0, p, seed, 2, cd); break; }
+            placeTree(c, d, f, m, r3 < 0.65f ? 2 : 0, p, seed, lod, cd);
+            if (lod == 0 && cd < 80 && Rand01(&s) < 0.04f && packOk(PM_STUMP)) addInst(c, m, PM_STUMP, vec(px + 3, groundC(c, px + 3, pz, cd) - 0.1f, pz), 0.9f, Rand01(&s) * 6, (Color){ 220, 210, 196, 255 });
             if (lod == 0 && Rand01(&s) < 0.3f) {
                 float qx = x0 + gcell * Rand01(&s), qz = z0 + gcell * Rand01(&s);
                 bush(f, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, 0.7f + Rand01(&s) * 0.6f, seed + 5, (Color){ 190, 206, 176, 255 }, LEAF_SHRUB);
@@ -647,12 +742,12 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, MeshBu
                 float qx = x0 + gcell * Rand01(&s), qz = z0 + gcell * Rand01(&s);
                 bush(f, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, 0.5f + Rand01(&s) * 0.5f, seed + 9, (Color){ 226, 222, 192, 255 }, LEAF_SHRUB);
             }
-            if (Rand01(&s) < 0.12f) placeTree(c, d, f, NULL, Rand01(&s) < 0.6f ? 2 : 0, (Vector3){ px + 2, p.y, pz - 2 }, seed + 3, lod, cd);
+            if (Rand01(&s) < 0.12f) placeTree(c, d, f, m, Rand01(&s) < 0.6f ? 2 : 0, (Vector3){ px + 2, p.y, pz - 2 }, seed + 3, lod, cd);
             // limestone boulders and the odd dead tree in the garrigue
             if (lod == 0 && cd < 70) {
                 float r5 = Rand01(&s);
-                if (r5 < 0.035f && packOk(PM_ROCK)) { float rh = 0.8f + Rand01(&s) * 1.6f; placeModel(m, PM_ROCK, vec(px, p.y - 0.15f, pz), rh, Rand01(&s) * 6, (Color){ 236, 228, 210, 255 }); if (cd < 60) addObs(c, px, pz, modelObstacleRadius(PM_ROCK, rh), 1); }
-                else if (r5 < 0.045f && packOk(PM_DEAD)) { placeModel(m, PM_DEAD, p, 4 + Rand01(&s) * 2.5f, Rand01(&s) * 6, (Color){ 210, 200, 186, 255 }); if (cd < 60) addObs(c, px, pz, 0.3f, 0); }
+                if (r5 < 0.035f && packOk(PM_ROCK)) { float rh = 0.8f + Rand01(&s) * 1.6f; addInst(c, m, PM_ROCK, vec(px, p.y - 0.15f, pz), rh, Rand01(&s) * 6, (Color){ 236, 228, 210, 255 }); if (cd < 60) addObs(c, px, pz, modelObstacleRadius(PM_ROCK, rh), 1); }
+                else if (r5 < 0.045f && packOk(PM_DEAD)) { addInst(c, m, PM_DEAD, p, 4 + Rand01(&s) * 2.5f, Rand01(&s) * 6, (Color){ 210, 200, 186, 255 }); if (cd < 60) addObs(c, px, pz, 0.3f, 0); }
             }
             break;
         case LC_GRASS:
@@ -671,19 +766,19 @@ static void buildTerrainRow(Chunk *c, GridBuf *t, MeshBuf *d, MeshBuf *f, MeshBu
             if (lod < 2) {
                 for (int q = 0; q < 2; q++) {
                     float qx = x0 + gcell * (0.25f + 0.5f * q) + (Rand01(&s) - 0.5f), qz = z0 + gcell * (0.3f + 0.4f * q) + (Rand01(&s) - 0.5f);
-                    placeTree(c, d, f, NULL, 4, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, seed + q * 31, lod, cd);
+                    placeTree(c, d, f, m, 4, (Vector3){ qx, groundC(c, qx, qz, cd), qz }, seed + q * 31, lod, cd);
                 }
-            } else if (r3 < 0.5f) placeTree(c, d, f, NULL, 4, p, seed, 2, cd);
+            } else if (r3 < 0.5f) placeTree(c, d, f, m, 4, p, seed, 2, cd);
             break;
         case LC_RESIDENTIAL:
             if (r3 < 0.32f) {
                 float r4 = Rand01(&s);
-                placeTree(c, d, f, r3 < 0.16f ? m : NULL, r4 < 0.3f ? 3 : r4 < 0.55f ? 2 : r4 < 0.8f ? 1 : 0, p, seed, lod, cd);
+                placeTree(c, d, f, m, r4 < 0.28f ? 3 : r4 < 0.5f ? 2 : r4 < 0.72f ? 1 : r4 < 0.82f ? 5 : 0, p, seed, lod, cd);
             } else if (lod == 0 && r3 < 0.5f) bush(f, p, 0.8f, seed, (Color){ 186, 214, 170, 255 }, LEAF_BROAD);
             break;
         case LC_BARE:
             if (lod == 0 && r3 < 0.1f) {
-                if (packOk(PM_ROCK) && cd < 70) placeModel(m, PM_ROCK, vec(p.x, p.y - 0.15f, p.z), 0.7f + Rand01(&s) * 1.3f, Rand01(&s) * 6, (Color){ 236, 230, 214, 255 });
+                if (packOk(PM_ROCK)) addInst(c, m, PM_ROCK, vec(p.x, p.y - 0.15f, p.z), 0.7f + Rand01(&s) * 1.3f, Rand01(&s) * 6, (Color){ 236, 230, 214, 255 });
                 else { MB_Mat(d, 3, 0, 3.0f); MB_Blob(d, p, (Vector3){ 1.0f, 0.6f, 0.8f }, 2, (Color){ 230, 226, 214, 255 }, 0.4f, seed); }
             }
             break;
@@ -996,7 +1091,30 @@ static Vector2 roofUV(Vector3 p, Vector3 e0, Vector3 eaveDir)
     return uv2(along / 2.4f, Vector3Length(perp) / 2.4f);
 }
 
-static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsigned seed)
+// footprint ground: the raw DEM, or the conformed ground close to the route (road cuttings and
+// embankments), so houses neither float above a cutting nor sink into an embankment
+static void buildingGround(const Building *bd, int hint, float *gmin, float *gavg)
+{
+    float mn = 1e9f, sum = 0;
+    for (int i = 0; i < bd->nv; i++) {
+        float x = bd->xz[2 * i], z = bd->xz[2 * i + 1];
+        float g = SceneRouteDist(x, z) < CONFORM_ZONE + 15 ? conformed(x, z, hint, hint < 0 ? 0 : 120, NULL) : DemHeight(x, z);
+        if (g < mn) mn = g;
+        sum += g;
+    }
+    *gmin = mn; *gavg = bd->nv ? sum / bd->nv : mn;
+}
+
+float SceneBuildingFloor(int building)
+{
+    const Building *bd = &W.buildings[building];
+    float mn, avg;
+    float s = RouteProject(bd->cx, bd->cz, -1, 0, NULL, NULL);
+    buildingGround(bd, RouteIndexAtS(s), &mn, &avg);
+    return avg;
+}
+
+static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsigned seed, int hint)
 {
     int n = bd->nv;
     if (n < 3) return;
@@ -1009,14 +1127,11 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
             xz[2 * (n - 1 - i)] = tx; xz[2 * (n - 1 - i) + 1] = tz;
         }
     }
-    float gmin = 1e9f, gsum = 0;
-    for (int i = 0; i < n; i++) {
-        float g = DemHeight(xz[2 * i], xz[2 * i + 1]);
-        if (g < gmin) gmin = g;
-        gsum += g;
-    }
-    float base = gmin - 0.4f, eave = gsum / n + bd->height;
-    if (bd->kind == 4) eave = gsum / n + fmaxf(bd->height, 9.0f);
+    float gmin, gavg;
+    buildingGround(bd, hint, &gmin, &gavg);
+    float gsum = gavg * n;
+    float base = gmin - 0.6f, eave = gavg + bd->height;
+    if (bd->kind == 4) eave = gavg + fmaxf(bd->height, 9.0f);
     unsigned s = seed;
     static const Color walls[] = { { 236, 218, 182, 255 }, { 230, 202, 156, 255 }, { 222, 188, 138, 255 }, { 242, 232, 208, 255 },
                                    { 216, 182, 134, 255 }, { 232, 198, 176, 255 }, { 226, 212, 182, 255 } };
@@ -1049,7 +1164,7 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
             if (y0 + 1.3f > eave - 0.3f) break;
             for (int w = 0; w < win; w++) {
                 float t = (w + 0.5f) * L / win;
-                float cx = p0.x + ux * t + nx * 0.04f, cz = p0.z + uz * t + nz * 0.04f;
+                float cx = p0.x + ux * t + nx * 0.07f, cz = p0.z + uz * t + nz * 0.07f;
                 float hwid = 0.45f, hh = f == 0 && w == win / 2 && (seed & 1) ? 1.05f : 0.65f;
                 float yy = f == 0 && hh > 0.9f ? gsum / n : y0;
                 Vector3 a = { cx - ux * hwid, yy, cz - uz * hwid }, bb = { cx + ux * hwid, yy, cz + uz * hwid };
@@ -1058,8 +1173,8 @@ static void buildBuilding(MeshBuf *b, const Building *bd, float routeDist, unsig
                 if (hh < 0.9f) {
                     for (int sd = -1; sd <= 1; sd += 2) {
                         float o0 = sd * hwid, o1 = sd * (hwid + 0.42f);
-                        Vector3 s0 = { cx + ux * fminf(o0, o1) + nx * 0.02f, y0 - 0.05f, cz + uz * fminf(o0, o1) + nz * 0.02f };
-                        Vector3 s1 = { cx + ux * fmaxf(o0, o1) + nx * 0.02f, y0 - 0.05f, cz + uz * fmaxf(o0, o1) + nz * 0.02f };
+                        Vector3 s0 = { cx + ux * fminf(o0, o1) + nx * 0.03f, y0 - 0.05f, cz + uz * fminf(o0, o1) + nz * 0.03f };
+                        Vector3 s1 = { cx + ux * fmaxf(o0, o1) + nx * 0.03f, y0 - 0.05f, cz + uz * fmaxf(o0, o1) + nz * 0.03f };
                         quadFacing(b, s0, s1, (Vector3){ s1.x, y0 + 2 * hh + 0.05f, s1.z }, (Vector3){ s0.x, y0 + 2 * hh + 0.05f, s0.z }, (Vector3){ nx, 0, nz }, shut);
                     }
                 }
@@ -1149,6 +1264,7 @@ static void jobStart(BuildJob *j, Chunk *c)
     MB_Mat(&j->f, 0, 0, 0);          // foliage: always the leaf atlas
     MB_Init(&j->m, 4096);
     MB_Mat(&j->m, 0, 0, 0);
+    c->nInst = 0;
     c->nObs = 0;
     j->phase = 1; j->row = c->cz0; j->idx = 0;
     j->active = true;
@@ -1175,8 +1291,8 @@ static bool jobStep(BuildJob *j, double budgetSec)
             {
                 const Building *bd = &W.buildings[c->bld[j->idx]];
                 float rd = SceneRouteDist(bd->cx, bd->cz);
-                buildBuilding(&j->d, bd, rd, Hash2(c->bld[j->idx], 99));
-                if (rd < 80) addObs(c, bd->cx, bd->cz, bd->radius * 0.85f, 1);
+                buildBuilding(&j->d, bd, rd, Hash2(c->bld[j->idx], 99), c->mid);
+                if (rd < 120) { addObs(c, bd->cx, bd->cz, bd->radius, 1); c->obs[c->nObs - 1].bld = c->bld[j->idx]; }
                 j->idx++;
             }
             break;
@@ -1245,6 +1361,7 @@ static void unloadChunk(Chunk *c)
     if (c->foliage.vertexCount) UnloadMesh(c->foliage);
     if (c->models.vertexCount) UnloadMesh(c->models);
     c->terrain = c->road = c->detail = c->foliage = c->models = (Mesh){ 0 };
+    c->nInst = 0;
     c->built = false;
     c->nObs = 0;
 }
@@ -1361,12 +1478,25 @@ void SceneInit(const char *treesBinPath, const char *treesPngPath)
     matDepthCut = LoadMaterialDefault();
     matDepthCut.shader = gDepthCut;
     matDepthCut.maps[0].texture = Tex(TEX_LEAVES);
-    matModels = LoadMaterialDefault();
-    matModels.shader = gLitCut;
-    matModels.maps[0].texture = packTex;
-    matDepthModels = LoadMaterialDefault();
-    matDepthModels.shader = gDepthCut;
-    matDepthModels.maps[0].texture = packTex;
+    matInst = LoadMaterialDefault();
+    matInst.shader = gLitInst;
+    matInst.maps[0].texture = packTex;
+    matInstFallback = LoadMaterialDefault();
+    matInstFallback.shader = gLitCut;
+    matInstFallback.maps[0].texture = packTex;
+    matImp = LoadMaterialDefault();
+    matImp.shader = gLitImp;
+    matImp.maps[0].texture = impTex;
+    matDepthInst = LoadMaterialDefault();
+    matDepthInst.shader = gDepthInst;
+    matDepthInst.maps[0].texture = packTex;
+    matDepthImp = LoadMaterialDefault();
+    matDepthImp.shader = gDepthCut;
+    matDepthImp.maps[0].texture = impTex;
+    matDepthPack = LoadMaterialDefault();
+    matDepthPack.shader = gDepthCut;
+    matDepthPack.maps[0].texture = packTex;
+    nearTarget = nearCut = gQuality == 2 ? 130.0f : gQuality == 1 ? 80.0f : 40.0f;
 
     gx0 = W.dem.x0; gz0 = W.dem.z0; gcell = W.dem.cell;
     gnx = W.dem.nx - 1; gnz = W.dem.nz - 1;
@@ -1529,7 +1659,7 @@ void SceneShutdown(void)
     if (fgJob.active) { GB_Free(&fgJob.t); MB_Free(&fgJob.r); MB_Free(&fgJob.d); MB_Free(&fgJob.f); MB_Free(&fgJob.m); fgJob.active = false; fgChunk = -1; }
     for (int i = 0; i < nChunks; i++) {
         unloadChunk(&chunks[i]);
-        free(chunks[i].obs); free(chunks[i].bld); free(chunks[i].pcs); free(chunks[i].trees);
+        free(chunks[i].obs); free(chunks[i].bld); free(chunks[i].pcs); free(chunks[i].trees); free(chunks[i].inst);
     }
     for (int i = 0; i < nFar; i++) UnloadMesh(farMesh[i]);
     for (int i = 0; i < nMid; i++) UnloadMesh(midMesh[i]);
@@ -1538,7 +1668,9 @@ void SceneShutdown(void)
     chunks = NULL; pieces = NULL; nPieces = 0;
     TexturesShutdown();
     if (packTex.id) UnloadTexture(packTex);
-    packTex = (Texture2D){ 0 };
+    if (impTex.id) UnloadTexture(impTex);
+    packTex = impTex = (Texture2D){ 0 };
+    for (int i = 0; i < nPack; i++) { UnloadMesh(packMesh[i]); free(nearBuf[i]); nearBuf[i] = NULL; nearCap[i] = nearCnt[i] = 0; }
     if (packData) UnloadFileData(packData);
     packData = NULL; nPack = 0;
 }
@@ -1635,6 +1767,70 @@ float SceneProgress(Vector3 focus)
     return want ? (float)have / want : 1.0f;
 }
 
+// ---- pack models drawn as real meshes close to the camera
+static void pushNear(int model, Matrix m)
+{
+    if (nearCnt[model] >= nearCap[model]) {
+        nearCap[model] = nearCap[model] ? nearCap[model] * 2 : 64;
+        nearBuf[model] = realloc(nearBuf[model], sizeof(Matrix) * nearCap[model]);
+    }
+    nearBuf[model][nearCnt[model]++] = m;
+}
+
+void SceneGather(Camera3D cam)
+{
+    for (int i = 0; i < nPack; i++) nearCnt[i] = 0;
+    nearTotal = 0;
+    float cut = nearCut;
+    if (!packOk(PM_OAK)) { RenderSetNearCut(0); return; }
+    Vector3 fwd = Vector3Subtract(cam.target, cam.position);
+    fwd.y = 0;
+    fwd = Vector3Length(fwd) > 1e-3f ? Vector3Normalize(fwd) : vec(0, 0, -1);
+    long verts = 0;
+    bool inst = RenderInstancing();
+    for (int i = 0; i < nChunks; i++) {
+        const Chunk *c = &chunks[i];
+        if (!c->built || !c->nInst || boxDist2D(&c->box, cam.position) > cut) continue;
+        for (int k = 0; k < c->nInst; k++) {
+            const TreeInst *t = &c->inst[k];
+            float dx = t->x - cam.position.x, dz = t->z - cam.position.z, d2 = dx * dx + dz * dz;
+            if (d2 > cut * cut) continue;
+            float r = t->h * packHalf[t->model] + 4.0f;
+            if (dx * fwd.x + dz * fwd.z < -r && d2 > 35.0f * 35.0f) continue;      // behind (kept close by for shadows)
+            Matrix m = instMatrix(t);
+            m.m3 = t->tint.r / 255.0f; m.m7 = t->tint.g / 255.0f; m.m11 = t->tint.b / 255.0f;
+            pushNear(t->model, m);
+            verts += packModels[t->model].nv;
+            nearTotal++;
+        }
+    }
+    // keep the cost bounded: shrink the model radius when too much is drawn, regrow slowly
+    long budget = inst ? (gQuality == 2 ? 1600000 : gQuality == 1 ? 650000 : 220000) : (gQuality == 2 ? 300000 : 180000);
+    if (verts > budget) nearCut = fmaxf(20.0f, nearCut * 0.9f);
+    else if (verts < budget * 0.6f) nearCut = fminf(nearTarget, nearCut * 1.04f + 0.5f);
+    RenderSetNearCut(cut);
+}
+
+static void drawNear(bool depth)
+{
+    if (!nearTotal) return;
+    rlDisableBackfaceCulling();
+    for (int i = 0; i < nPack; i++) {
+        if (!nearCnt[i]) continue;
+        if (RenderInstancing()) { DrawMeshInstanced(packMesh[i], depth ? matDepthInst : matInst, nearBuf[i], nearCnt[i]); continue; }
+        for (int k = 0; k < nearCnt[i]; k++) {
+            Matrix m = nearBuf[i][k];
+            Color tn = { (unsigned char)(m.m3 * 255), (unsigned char)(m.m7 * 255), (unsigned char)(m.m11 * 255), 255 };
+            m.m3 = m.m7 = m.m11 = 0;
+            if (depth) DrawMesh(packMesh[i], matDepthPack, m);
+            else { matInstFallback.maps[0].color = tn; DrawMesh(packMesh[i], matInstFallback, m); }
+        }
+    }
+    rlEnableBackfaceCulling();
+}
+
+int SceneNearModels(void) { return nearTotal; }
+
 static bool chunkVisible(const Chunk *c, Camera3D cam, Vector3 fwd)
 {
     if (!c->built) return false;
@@ -1692,19 +1888,20 @@ void SceneDraw(Camera3D cam)
         Chunk *c = &chunks[i];
         if (!c->models.vertexCount || !chunkVisible(c, cam, fwd)) continue;
         RenderSetRise(riseOf(c, now));
-        DrawMesh(c->models, matModels, MatrixIdentity());
+        DrawMesh(c->models, matImp, MatrixIdentity());
     }
-    rlEnableBackfaceCulling();
     RenderSetRise(1.0f);
+    drawNear(false);
+    rlEnableBackfaceCulling();
 }
 
-// shadow casters around 'centre' (terrain, buildings/trunks, foliage) with the depth shaders
+// shadow casters around 'centre' (buildings/trunks, foliage, pack models) with the depth shaders
 void SceneDrawShadow(Vector3 centre, float radius)
 {
     for (int i = 0; i < nChunks; i++) {
         Chunk *c = &chunks[i];
         if (!c->built || boxDist2D(&c->box, centre) > radius) continue;
-        if (c->terrain.vertexCount) DrawMesh(c->terrain, matDepth, MatrixIdentity());
+        // no terrain: its coarse triangles next to the road would shadow the asphalt in blocks
         if (c->detail.vertexCount) DrawMesh(c->detail, matDepth, MatrixIdentity());
     }
     rlDisableBackfaceCulling();
@@ -1712,8 +1909,9 @@ void SceneDrawShadow(Vector3 centre, float radius)
         Chunk *c = &chunks[i];
         if (!c->built || boxDist2D(&c->box, centre) > radius) continue;
         if (c->foliage.vertexCount) DrawMesh(c->foliage, matDepthCut, MatrixIdentity());
-        if (c->models.vertexCount) DrawMesh(c->models, matDepthModels, MatrixIdentity());
+        if (c->models.vertexCount) DrawMesh(c->models, matDepthImp, MatrixIdentity());
     }
+    drawNear(true);
     rlEnableBackfaceCulling();
 }
 
@@ -1737,6 +1935,34 @@ void SceneStats(int *loaded, long *verts, long *bytes)
     if (bytes) *bytes = by;
 }
 
+static bool insidePoly(const float *xz, int n, float x, float z)
+{
+    bool in = false;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        float xi = xz[2 * i], zi = xz[2 * i + 1], xj = xz[2 * j], zj = xz[2 * j + 1];
+        if (((zi > z) != (zj > z)) && (x < (xj - xi) * (z - zi) / (zj - zi) + xi)) in = !in;
+    }
+    return in;
+}
+
+static float distSeg(float px, float pz, float ax, float az, float bx, float bz)
+{
+    float ex = bx - ax, ez = bz - az, L2 = ex * ex + ez * ez;
+    float t = L2 > 0 ? Clamp(((px - ax) * ex + (pz - az) * ez) / L2, 0, 1) : 0;
+    float dx = px - (ax + ex * t), dz = pz - (az + ez * t);
+    return sqrtf(dx * dx + dz * dz);
+}
+
+// circle (x, z, r) against the building footprint
+static bool hitBuilding(int b, float x, float z, float r)
+{
+    const Building *bd = &W.buildings[b];
+    if (insidePoly(bd->xz, bd->nv, x, z)) return true;
+    for (int i = 0, j = bd->nv - 1; i < bd->nv; j = i++)
+        if (distSeg(x, z, bd->xz[2 * j], bd->xz[2 * j + 1], bd->xz[2 * i], bd->xz[2 * i + 1]) < r) return true;
+    return false;
+}
+
 bool SceneCollide(float x, float z, float radius, Obstacle *hit)
 {
     for (int i = 0; i < nChunks; i++) {
@@ -1746,8 +1972,38 @@ bool SceneCollide(float x, float z, float radius, Obstacle *hit)
         for (int k = 0; k < c->nObs; k++) {
             const Obstacle *o = &c->obs[k];
             float dx = o->x - x, dz = o->z - z, rr = o->r + radius;
-            if (dx * dx + dz * dz < rr * rr) { if (hit) *hit = *o; return true; }
+            if (dx * dx + dz * dz >= rr * rr) continue;
+            if (o->bld >= 0 && !hitBuilding(o->bld, x, z, radius)) continue;   // inside the bounding circle only
+            if (hit) *hit = *o;
+            return true;
         }
     }
     return false;
+}
+
+float SceneCameraClear(Vector3 from, Vector3 to)
+{
+    float best = 1.0f;
+    float minx = fminf(from.x, to.x) - 1, maxx = fmaxf(from.x, to.x) + 1, minz = fminf(from.z, to.z) - 1, maxz = fmaxf(from.z, to.z) + 1;
+    for (int i = 0; i < nChunks; i++) {
+        Chunk *c = &chunks[i];
+        if (!c->built || !c->nObs) continue;
+        if (maxx < c->box.min.x - 20 || minx > c->box.max.x + 20 || maxz < c->box.min.z - 20 || minz > c->box.max.z + 20) continue;
+        for (int k = 0; k < c->nObs; k++) {
+            const Obstacle *o = &c->obs[k];
+            if (o->bld < 0) continue;
+            if (o->x + o->r < minx || o->x - o->r > maxx || o->z + o->r < minz || o->z - o->r > maxz) continue;
+            const Building *bd = &W.buildings[o->bld];
+            float top = DemHeight(bd->cx, bd->cz) + bd->height + 3.0f;    // eave + roof, roughly
+            // march along the segment (cheap and robust for convex and concave footprints)
+            for (int q = 1; q <= 24; q++) {
+                float t = q / 24.0f;
+                if (t >= best) break;
+                float x = from.x + (to.x - from.x) * t, z = from.z + (to.z - from.z) * t, y = from.y + (to.y - from.y) * t;
+                if (y > top) continue;
+                if (hitBuilding(o->bld, x, z, 0.45f)) { best = (q - 1) / 24.0f; break; }
+            }
+        }
+    }
+    return best;
 }

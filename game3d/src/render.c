@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <math.h>
 
-Shader gLit, gLitCut, gDepth, gDepthCut;
+Shader gLit, gLitCut, gLitInst, gLitImp, gDepth, gDepthCut, gDepthInst, gUnlitCut;
 MatParams MAT_MATTE   = { 0.05f, 8.0f, 0.00f, 0.0f };
 MatParams MAT_ROAD    = { 0.10f, 20.0f, 0.04f, 0.0f };
 MatParams MAT_PAINT   = { 0.75f, 70.0f, 0.38f, 0.0f };
@@ -17,12 +17,14 @@ MatParams MAT_PLASTIC = { 0.15f, 20.0f, 0.06f, 0.0f };
 MatParams MAT_LIGHT   = { 0.80f, 80.0f, 0.30f, 0.55f };
 MatParams MAT_RUBBER  = { 0.04f, 6.0f, 0.00f, 0.0f };
 
-typedef struct { Shader sh; int view, fogCol, fogDen, mat, reflMin, rise, lightVP, shadowOn, shadowTexel; } LitShader;
-static LitShader L[2];
+typedef struct { Shader sh; int view, fogCol, fogDen, mat, reflMin, rise, lightVP, shadowOn, shadowTexel, nearCut; } LitShader;
+#define NLIT 4          // lit, foliage, foliage instanced, foliage impostor
+static LitShader L[NLIT];
+static bool instancing;
 static RenderTexture2D shadowRT;
 static bool shadowsOn, inShadowPass;
 static int shadowSize;
-static const float SHADOW_EXTENT = 340.0f;      // metres covered by the shadow map
+static const float SHADOW_EXTENT = 280.0f;      // metres covered by the shadow map
 static Vector3 sunDir;
 static Color fogColor = { 196, 209, 224, 255 };
 
@@ -35,6 +37,12 @@ static Color fogColor = { 196, 209, 224, 255 };
 #endif
 
 static const char *VS_BODY =
+    "#ifdef INSTANCED\n"
+    "attribute mat4 instanceTransform;\n"
+    "#endif\n"
+    "#ifdef IMPOSTOR\n"
+    "uniform float nearCut;\n"
+    "#endif\n"
     "attribute vec3 vertexPosition;\n"
     "attribute vec2 vertexTexCoord;\n"
     "attribute vec2 vertexTexCoord2;\n"
@@ -55,14 +63,31 @@ static const char *VS_BODY =
     "void main() {\n"
     "  vec3 lp = vertexPosition;\n"
     "  lp.y -= (1.0 - rise) * 30.0;\n"
+    "#ifdef INSTANCED\n"
+    "  // per-instance transform; its unused bottom row carries the tint\n"
+    "  mat4 M = instanceTransform;\n"
+    "  vec3 tint = vec3(M[0][3], M[1][3], M[2][3]);\n"
+
+    "  M[0][3] = 0.0; M[1][3] = 0.0; M[2][3] = 0.0;\n"
+    "  vec4 wp = M * vec4(lp, 1.0);\n"
+    "  vNormal = (M * vec4(vertexNormal, 0.0)).xyz;\n"
+    "  vColor = vec4(vertexColor.rgb * tint, vertexColor.a);\n"
+    "  gl_Position = mvp * wp;\n"
+    "#else\n"
     "  vec4 wp = matModel * vec4(lp, 1.0);\n"
-    "  vView = viewPos - wp.xyz;\n"
-    "  vShadow = lightVP * wp;\n"
     "  vNormal = (matNormal * vec4(vertexNormal, 0.0)).xyz;\n"
     "  vColor = vertexColor;\n"
+    "  gl_Position = mvp * vec4(lp, 1.0);\n"
+    "#endif\n"
+    "  vView = viewPos - wp.xyz;\n"
+    "  vShadow = lightVP * wp;\n"
     "  vUV = vertexTexCoord;\n"
     "  vUV2 = vertexTexCoord2;\n"
-    "  gl_Position = mvp * vec4(lp, 1.0);\n"
+    "#ifdef IMPOSTOR\n"
+    "  // impostor cards: texcoord2 = tree position; hidden where the real model is drawn\n"
+    "  vec2 dd = viewPos.xz - vertexTexCoord2;\n"
+    "  if (dot(dd, dd) < nearCut * nearCut) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n"
+    "#endif\n"
     "}\n";
 
 static const char *FS_BODY =
@@ -73,6 +98,15 @@ static const char *FS_BODY =
     "float shadowTap(vec2 uv, float d) {\n"
     "  float sd = dot(texture2D(shadowMap, uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
     "  return sd < d ? 0.0 : 1.0;\n"
+    "}\n"
+    "// 2x2 comparisons blended with bilinear weights: smooth edges instead of texel steps\n"
+    "float shadowSmooth(vec2 uv, float d) {\n"
+    "  vec2 st = uv / shadowTexel - 0.5;\n"
+    "  vec2 f = fract(st);\n"
+    "  vec2 b = (floor(st) + 0.5) * shadowTexel;\n"
+    "  float s00 = shadowTap(b, d), s10 = shadowTap(b + vec2(shadowTexel, 0.0), d);\n"
+    "  float s01 = shadowTap(b + vec2(0.0, shadowTexel), d), s11 = shadowTap(b + vec2(shadowTexel), d);\n"
+    "  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);\n"
     "}\n"
     "float shadowFactor(float ndl) {\n"
     "  if (shadowOn < 0.5) return 1.0;\n"
@@ -86,10 +120,10 @@ static const char *FS_BODY =
     "  float d = sc.z - (0.0006 + 0.0016 * (1.0 - ndl));\n"
     "#endif\n"
     "#ifdef PCF\n"
-    "  float t = shadowTexel * 0.6;\n"
-    "  float s = (shadowTap(sc.xy + vec2(-t, -t), d) + shadowTap(sc.xy + vec2(t, -t), d) + shadowTap(sc.xy + vec2(-t, t), d) + shadowTap(sc.xy + vec2(t, t), d)) * 0.25;\n"
+    "  float t = shadowTexel * 0.75;\n"
+    "  float s = (shadowSmooth(sc.xy + vec2(-t, -t), d) + shadowSmooth(sc.xy + vec2(t, -t), d) + shadowSmooth(sc.xy + vec2(-t, t), d) + shadowSmooth(sc.xy + vec2(t, t), d)) * 0.25;\n"
     "#else\n"
-    "  float s = shadowTap(sc.xy, d);\n"
+    "  float s = shadowSmooth(sc.xy, d);\n"
     "#endif\n"
     "  return mix(1.0, s, edge);\n"
     "}\n"
@@ -122,7 +156,11 @@ static const char *FS_BODY =
     "  vec4 w = max(vec4(1.0) - abs(vec4(m) - vec4(0.0, 1.0, 2.0, 3.0)), vec4(0.0));\n"
     "  vec4 t = texture2D(texture0, vUV) * w.x + texture2D(texture1, vUV) * w.y + texture2D(texture2, vUV) * w.z + texture2D(texture3, vUV) * w.w;\n"
     "#endif\n"
+    "#if defined(INSTANCED) || defined(IMPOSTOR)\n"
+    "  vec4 albedo = vec4(vColor.rgb * t.rgb, vColor.a) * colDiffuse;\n"
+    "#else\n"
     "  vec4 albedo = vec4(vColor.rgb * mix(t.rgb, vec3(1.0), vUV2.y), vColor.a) * colDiffuse;\n"
+    "#endif\n"
     "  vec3 n = normalize(vNormal);\n"
     "  float dist = length(vView);\n"
     "  vec3 v = vView / max(dist, 0.001);\n"
@@ -156,9 +194,47 @@ static const char *FS_BODY =
 static const char *DEPTH_VS =
     "attribute vec3 vertexPosition;\n"
     "attribute vec2 vertexTexCoord;\n"
+    "#ifdef INSTANCED\n"
+    "attribute mat4 instanceTransform;\n"
+    "// keep the mesh attributes active so instanceTransform gets the same free locations (6..9) as\n"
+    "// in the lit shader: raylib stores the instance attributes in the mesh's vertex array object\n"
+    "attribute vec3 vertexNormal;\n"
+    "attribute vec4 vertexColor;\n"
+    "attribute vec2 vertexTexCoord2;\n"
+    "#endif\n"
     "uniform mat4 mvp;\n"
     "varying vec2 vUV;\n"
-    "void main() { vUV = vertexTexCoord; gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
+    "void main() {\n"
+    "  vUV = vertexTexCoord;\n"
+    "#ifdef INSTANCED\n"
+    "  mat4 M = instanceTransform;\n"
+    "  M[0][3] = 0.0; M[1][3] = 0.0; M[2][3] = 0.0;\n"
+    "  vUV += (vertexNormal.xy + vertexColor.xy + vertexTexCoord2) * 1.0e-9;\n"
+    "  gl_Position = mvp * (M * vec4(vertexPosition, 1.0));\n"
+    "#else\n"
+    "  gl_Position = mvp * vec4(vertexPosition, 1.0);\n"
+    "#endif\n"
+    "}\n";
+
+// unlit, alpha-tested: used to bake the impostor views of the model pack
+static const char *UNLIT_VS =
+    "attribute vec3 vertexPosition;\n"
+    "attribute vec2 vertexTexCoord;\n"
+    "attribute vec4 vertexColor;\n"
+    "uniform mat4 mvp;\n"
+    "varying vec2 vUV;\n"
+    "varying vec4 vColor;\n"
+    "void main() { vUV = vertexTexCoord; vColor = vertexColor; gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
+static const char *UNLIT_FS =
+    "varying vec2 vUV;\n"
+    "varying vec4 vColor;\n"
+    "uniform sampler2D texture0;\n"
+    "uniform vec4 colDiffuse;\n"
+    "void main() {\n"
+    "  vec4 t = texture2D(texture0, vUV);\n"
+    "  if (t.a < 0.5) discard;\n"
+    "  gl_FragColor = vec4(t.rgb * vColor.rgb * colDiffuse.rgb, 1.0);\n"
+    "}\n";
 static const char *DEPTH_FS =
     "varying vec2 vUV;\n"
     "uniform sampler2D texture0;\n"
@@ -179,6 +255,7 @@ static Shader loadDepth(const char *defines)
     Shader sh = LoadShaderFromMemory(vs, fs);
     MemFree(vs); MemFree(fs);
     sh.locs[SHADER_LOC_MAP_ALBEDO] = GetShaderLocation(sh, "texture0");
+    if (strstr(defines, "INSTANCED")) sh.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocationAttrib(sh, "instanceTransform");
     return sh;
 }
 
@@ -190,7 +267,7 @@ static LitShader loadLit(const char *defines)
     LitShader s;
     s.sh = LoadShaderFromMemory(vs, fs);
     MemFree(vs); MemFree(fs);
-    s.sh.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(s.sh, "matModel");
+    s.sh.locs[SHADER_LOC_MATRIX_MODEL] = strstr(defines, "INSTANCED") ? GetShaderLocationAttrib(s.sh, "instanceTransform") : GetShaderLocation(s.sh, "matModel");
     s.sh.locs[SHADER_LOC_MATRIX_NORMAL] = GetShaderLocation(s.sh, "matNormal");
     s.sh.locs[SHADER_LOC_VECTOR_VIEW] = GetShaderLocation(s.sh, "viewPos");
     s.sh.locs[SHADER_LOC_VERTEX_TEXCOORD02] = GetShaderLocationAttrib(s.sh, "vertexTexCoord2");
@@ -207,6 +284,7 @@ static LitShader loadLit(const char *defines)
     s.lightVP = GetShaderLocation(s.sh, "lightVP");
     s.shadowOn = GetShaderLocation(s.sh, "shadowOn");
     s.shadowTexel = GetShaderLocation(s.sh, "shadowTexel");
+    s.nearCut = GetShaderLocation(s.sh, "nearCut");
     int unit = 7;
     SetShaderValue(s.sh, GetShaderLocation(s.sh, "shadowMap"), &unit, SHADER_UNIFORM_INT);
     float zero = 0.0f;
@@ -230,6 +308,42 @@ static LitShader loadLit(const char *defines)
     return s;
 }
 
+// GPU instancing: core in OpenGL 3.3; on GLES2 / WebGL 1 it needs one of the instanced_arrays
+// extensions (raylib loads the same entry points from the same list).
+#if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB) || defined(GRAPHICS_API_OPENGL_ES2)
+#include <GLES2/gl2.h>
+#if defined(PLATFORM_ANDROID)
+#include <EGL/egl.h>
+#endif
+static bool detectInstancing(void)
+{
+    const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+    if (!ext) return false;
+    static const char *names[3][4] = {
+        { "GL_ANGLE_instanced_arrays", "glDrawArraysInstancedANGLE", "glDrawElementsInstancedANGLE", "glVertexAttribDivisorANGLE" },
+        { "GL_EXT_instanced_arrays", "glDrawArraysInstancedEXT", "glDrawElementsInstancedEXT", "glVertexAttribDivisorEXT" },
+        { "GL_NV_instanced_arrays", "glDrawArraysInstancedNV", "glDrawElementsInstancedNV", "glVertexAttribDivisorNV" } };
+    for (int i = 0; i < 3; i++) {
+        if (!strstr(ext, names[i][0])) continue;
+#if defined(PLATFORM_ANDROID)
+        // the same three entry points raylib loads for this extension must exist
+        if (!eglGetProcAddress(names[i][1]) || !eglGetProcAddress(names[i][2]) || !eglGetProcAddress(names[i][3])) continue;
+#endif
+        return true;
+    }
+    return false;
+}
+#else
+static bool detectInstancing(void) { return rlGetVersion() >= RL_OPENGL_33; }
+#endif
+
+bool RenderInstancing(void) { return instancing; }
+
+void RenderSetNearCut(float metres)
+{
+    for (int i = 0; i < NLIT; i++) if (L[i].nearCut >= 0) SetShaderValue(L[i].sh, L[i].nearCut, &metres, SHADER_UNIFORM_FLOAT);
+}
+
 void RenderInit(void)
 {
 #if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
@@ -239,22 +353,41 @@ void RenderInit(void)
     const char *pcf = "#define PCF\n";
     shadowSize = 2048;
 #endif
-    char d0[64], d1[64];
-    snprintf(d0, sizeof(d0), "%s", pcf);
-    snprintf(d1, sizeof(d1), "#define FOLIAGE\n%s", pcf);
-    L[0] = loadLit(d0);
-    L[1] = loadLit(d1);
+    char d[4][96];
+    snprintf(d[0], sizeof(d[0]), "%s", pcf);
+    snprintf(d[1], sizeof(d[1]), "#define FOLIAGE\n%s", pcf);
+    snprintf(d[2], sizeof(d[2]), "#define FOLIAGE\n#define INSTANCED\n%s", pcf);
+    snprintf(d[3], sizeof(d[3]), "#define FOLIAGE\n#define IMPOSTOR\n%s", pcf);
+    for (int i = 0; i < NLIT; i++) L[i] = loadLit(d[i]);
     gLit = L[0].sh;
     gLitCut = L[1].sh;
+    gLitInst = L[2].sh;
+    gLitImp = L[3].sh;
     gDepth = loadDepth("");
     gDepthCut = loadDepth("#define FOLIAGE\n");
+    gDepthInst = loadDepth("#define FOLIAGE\n#define INSTANCED\n");
+    {
+        char *vs = MemAlloc(2048), *fs = MemAlloc(2048);
+        strcpy(vs, VS_PREFIX); strcat(vs, UNLIT_VS);
+        strcpy(fs, FS_PREFIX); strcat(fs, UNLIT_FS);
+        gUnlitCut = LoadShaderFromMemory(vs, fs);
+        MemFree(vs); MemFree(fs);
+    }
+    instancing = detectInstancing();
+    {
+        int a = GetShaderLocationAttrib(gLitInst, "instanceTransform"), b = GetShaderLocationAttrib(gDepthInst, "instanceTransform");
+        if (a != b || a < 6) { TraceLog(LOG_WARNING, "RENDER: instance attribute locations differ (%d / %d), instancing off", a, b); instancing = false; }
+    }
+    TraceLog(LOG_INFO, "RENDER: GPU instancing %s", instancing ? "available" : "unavailable (per-model draws)");
+    RenderSetNearCut(0);
     RenderSetMat(MAT_MATTE);
     RenderSetFog(1.0f / 9000.0f);
 }
 
 void RenderShutdown(void)
 {
-    UnloadShader(gLit); UnloadShader(gLitCut); UnloadShader(gDepth); UnloadShader(gDepthCut);
+    for (int i = 0; i < NLIT; i++) UnloadShader(L[i].sh);
+    UnloadShader(gDepth); UnloadShader(gDepthCut); UnloadShader(gDepthInst); UnloadShader(gUnlitCut);
     if (shadowRT.id) UnloadRenderTexture(shadowRT);
     shadowRT = (RenderTexture2D){ 0 };
 }
@@ -269,18 +402,19 @@ void RenderSetShadows(bool on)
             SetTextureFilter(shadowRT.texture, TEXTURE_FILTER_POINT);
             SetTextureWrap(shadowRT.texture, TEXTURE_WRAP_CLAMP);
             float texel = 1.0f / shadowSize;
-            for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].shadowTexel, &texel, SHADER_UNIFORM_FLOAT);
+            for (int i = 0; i < NLIT; i++) SetShaderValue(L[i].sh, L[i].shadowTexel, &texel, SHADER_UNIFORM_FLOAT);
         }
     }
     shadowsOn = on;
     float v = on ? 1.0f : 0.0f;
-    for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].shadowOn, &v, SHADER_UNIFORM_FLOAT);
+    for (int i = 0; i < NLIT; i++) SetShaderValue(L[i].sh, L[i].shadowOn, &v, SHADER_UNIFORM_FLOAT);
 }
 
 bool RenderShadowsEnabled(void) { return shadowsOn && shadowRT.id; }
 float RenderShadowRadius(void) { return SHADOW_EXTENT * 0.72f; }
 Texture2D RenderShadowTexture(void) { return shadowRT.texture; }
 Shader RenderLitShader(void) { return inShadowPass ? gDepth : gLit; }
+bool RenderInShadowPass(void) { return inShadowPass; }
 
 Camera3D RenderShadowBegin(Vector3 centre)
 {
@@ -299,7 +433,7 @@ Camera3D RenderShadowBegin(Vector3 centre)
     float top = SHADOW_EXTENT * 0.5f;
     Matrix proj = MatrixOrtho(-top, top, -top, top, 1.0, 1300.0);
     Matrix vp = MatrixMultiply(view, proj);
-    for (int i = 0; i < 2; i++) SetShaderValueMatrix(L[i].sh, L[i].lightVP, vp);
+    for (int i = 0; i < NLIT; i++) SetShaderValueMatrix(L[i].sh, L[i].lightVP, vp);
     inShadowPass = true;
     return lc;
 }
@@ -308,7 +442,7 @@ void RenderShadowEnd(void)
 {
     EndMode3D();
     EndTextureMode();
-    rlSetClipPlanes(0.25, 30000.0);
+    rlSetClipPlanes(RENDER_NEAR, RENDER_FAR);
     inShadowPass = false;
     rlActiveTextureSlot(7);
     rlEnableTexture(shadowRT.texture.id);
@@ -317,18 +451,18 @@ void RenderShadowEnd(void)
 
 void RenderSetFrame(Camera3D cam, float fogDensity)
 {
-    for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].view, &cam.position, SHADER_UNIFORM_VEC3);
+    for (int i = 0; i < NLIT; i++) SetShaderValue(L[i].sh, L[i].view, &cam.position, SHADER_UNIFORM_VEC3);
     RenderSetFog(fogDensity);
 }
 
 void RenderSetFog(float density)
 {
-    for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].fogDen, &density, SHADER_UNIFORM_FLOAT);
+    for (int i = 0; i < NLIT; i++) SetShaderValue(L[i].sh, L[i].fogDen, &density, SHADER_UNIFORM_FLOAT);
 }
 
 void RenderSetRise(float k)
 {
-    for (int i = 0; i < 2; i++) SetShaderValue(L[i].sh, L[i].rise, &k, SHADER_UNIFORM_FLOAT);
+    for (int i = 0; i < NLIT; i++) SetShaderValue(L[i].sh, L[i].rise, &k, SHADER_UNIFORM_FLOAT);
 }
 
 void RenderSetMat(MatParams m) { RenderSetMatEx(m.spec, m.shininess, m.reflect, 0.12f, m.emissive); }

@@ -20,7 +20,13 @@ typedef struct {
 // gLit samples texture0..texture3 (Material maps ALBEDO, METALNESS, NORMAL, ROUGHNESS);
 // gLitCut is the alpha-tested variant for foliage cards (texture0 only, two-sided lighting).
 extern Shader gLit, gLitCut;
+extern Shader gLitInst;            // foliage shader for GPU-instanced models (attribute instanceTransform, tint in its bottom row)
+extern Shader gLitImp;             // foliage shader for impostor cards: texcoord2 = tree x/z, hidden within RenderSetNearCut()
 extern Shader gDepth, gDepthCut;   // shadow-map pass (packed depth), plain and alpha-tested
+extern Shader gDepthInst;          // shadow-map pass, instanced alpha-tested
+extern Shader gUnlitCut;           // unlit alpha-tested (impostor baking)
+#define RENDER_NEAR 0.35           // camera clip planes (metres)
+#define RENDER_FAR  30000.0
 extern MatParams MAT_MATTE, MAT_ROAD, MAT_PAINT, MAT_GLASS, MAT_CHROME, MAT_PLASTIC, MAT_LIGHT, MAT_RUBBER;
 
 void RenderInit(void);
@@ -39,6 +45,9 @@ void     RenderShadowEnd(void);
 Shader   RenderLitShader(void);                          // gLit, or gDepth inside the shadow pass
 float    RenderShadowRadius(void);
 Texture2D RenderShadowTexture(void);                    // debug
+bool     RenderInShadowPass(void);
+bool     RenderInstancing(void);                         // DrawMeshInstanced usable on this GPU
+void     RenderSetNearCut(float metres);                 // impostor cards closer than this (x/z) are hidden
 void DrawSky(Camera3D cam, int w, int h);
 Color FogColor(void);
 Vector3 SunDir(void);

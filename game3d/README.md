@@ -53,12 +53,20 @@ L'APK est reconstruit automatiquement par GitHub Actions à chaque modification 
 - **Circulation réelle** : les autres voitures respectent les limitations du tracé (50 en agglomération, 30 dans
   les giratoires, 80/90 sur route) ; celles d'en face freinent et klaxonnent si tu es dans leur voie.
 - **Graphismes léger/normal/élevé** : réglage dans le menu (léger pour les téléphones modestes).
+- **Parcours balisé comme une course** : arche DÉPART, 5 checkpoints (arches bleues aux noms des
+  villages, temps intermédiaire comparé au record), panneaux « ARRIVÉE 1 km / 500 m / 200 m / 100 m »,
+  bornes kilométriques, chevrons et vibreurs rouge et blanc dans les virages serrés, bottes de foin,
+  barrières qui ferment les routes adjacentes, fanions dans les villages, panneaux publicitaires et
+  public au départ, aux checkpoints et sur les 150 derniers mètres ; arche ARRIVÉE à damier,
+  drapeaux, confettis. Barre de progression en bas de l'écran (checkpoints + drapeau d'arrivée).
 - **Rendu** : textures procédurales (herbe, garrigue, calcaire, bitume, gravier, enduits, tuiles canal,
   écorce) générées au lancement, arbres faits d'un tronc texturé et de « cartes » de feuillage (pins
   d'Alep, chênes, oliviers, cyprès, platanes), pack de modèles low-poly (`assets/trees.bin` + `trees.png`,
-  construit par `tools/treepack.py` à partir du pack d'arbres fourni) pour les arbres isolés près de la
-  route, les arbres des villages, les rochers et les arbres morts de la garrigue ; ombres portées du
-  soleil (qualité « élevé »), brume atmosphérique jusqu'à l'horizon (30 km).
+  construit par `tools/treepack.py` à partir du pack d'arbres fourni) pour tous les feuillus, les
+  platanes, les cyprès (peupliers), un tiers des pins, les bouleaux des jardins, rochers, souches et
+  arbres morts : modèles complets dessinés par instanciation GPU près de la caméra, « imposteurs »
+  (vues pré-rendues du modèle) au loin ; ombres portées du soleil (qualité « élevé »), brume
+  atmosphérique jusqu'à l'horizon (30 km).
 
 ## D'où viennent les données
 
@@ -97,9 +105,11 @@ Android : voir [`android/README.md`](android/README.md) (CI GitHub, ou `android/
 | `car_model.c` | modèles 3D procéduraux : C4 Cactus + 5 véhicules du trafic |
 | `car.c` | physique de la voiture (adhérence, sous-virage, aide à la direction, suspension) |
 | `traffic.c` | trafic (limitations réelles, distances de sécurité, voies, circulation en face) |
-| `signs.c` | panneaux d'agglomération avec les vrais noms, départ, épingle d'arrivée |
+| `signs.c` | panneaux d'agglomération avec les vrais noms, disque de départ, épingle d'arrivée |
+| `course.c` | balisage de course : arches, checkpoints, panneaux de distance, chevrons, vibreurs, barrières, fanions, public |
 | `audio.c` | moteur 4 cylindres, pneus, vent et effets synthétisés en temps réel |
 | `game.c` | états du jeu, caméra, commandes tactiles, HUD, menus |
 
 Mode test automatique (PC) : `CARPOLO_TEST=1 ./build-bin/carpolo3d` (pilote automatique + captures d'écran) ;
-sur le web, ajouter `?test` à l'adresse. `tools/texdump.c` écrit les textures générées en PNG.
+sur le web, ajouter `?test` à l'adresse. `CARPOLO_TOUR="2,2470,12470"` (avec `CARPOLO_TEST=1`) photographie
+le parcours à ces distances (vue poursuite + vue aérienne). `tools/texdump.c` écrit les textures générées en PNG.

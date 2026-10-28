@@ -89,8 +89,17 @@ PAINT/GLASS/CHROME, emissive-ish lights), choosing parameters from the material 
   `texcoord` = uv in texture tiles, `texcoord2.x` = material id 0..3 (fractions blend the four
   textures), `texcoord2.y` = 1 for flat vertex-coloured surfaces, `color.rgb` = tint, `color.a` = opacity.
   Foliage (leaf cards) is a separate alpha-tested, two-sided mesh per chunk (`gLitCut`); a fourth
-  per-chunk mesh holds instances of the low-poly model pack (`assets/trees.bin`, format in
-  `tools/treepack.py`), used only within 90 m of the road because each model is 2-5k vertices.
+  per-chunk mesh holds the impostor cards of the low-poly model pack (`assets/trees.bin`, format in
+  `tools/treepack.py`): each pack tree is two crossed cards from an atlas baked at start-up (front and
+  side views of the model), hidden within `nearCut` metres of the camera where the real model is drawn
+  with GPU instancing (`DrawMeshInstanced`, transform + tint per instance; per-model draws when the GPU
+  lacks instancing). The near radius shrinks automatically when too many vertices would be drawn.
+- Buildings stand on the conformed ground (road cuttings and embankments), collide with their real
+  footprint, and the chase camera is pulled in when a wall is between it and the car. Depth buffer:
+  24 bits everywhere (raylib's Android EGL config is patched from 16 bits at configure time), near
+  plane 0.2 m (bonnet view) or 0.5 m.
+- Race dressing (`course.c`): one banner atlas generated at start-up (text from the game font), static
+  meshes grouped every 400 m of route, own list of solid circles for collisions.
 - Sun shadows: orthographic 340 m shadow map centred 70 m ahead of the car, depth packed in RGB
   (works on GLES2/WebGL1), PCF on desktop, sampled on texture unit 7 by the lit shaders.
 - Terrain chunks are indexed (16-bit, shared vertices on a half-cell grid); the rest stays non-indexed.

@@ -10,6 +10,7 @@
 #include "traffic.h"
 #include "audio.h"
 #include "signs.h"
+#include "course.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -64,6 +65,13 @@ typedef struct {
     int zone; float bannerT;
     char msg[64]; float msgT; Color msgCol;
     float goT;
+    // checkpoints: times of this run, best run's splits, next one to pass
+    int cpNext;
+    float cpTime[COURSE_MAX_CP], bestSplit[COURSE_MAX_CP];
+    int nBestSplit;
+    float cpMsgT; char cpMsg[96]; Color cpCol;
+    float finishFx;
+    int announced;          // last finish-distance announcement made (1000, 500, 200)
     bool touchUI;
     bool quit;
     float horizonFog;
@@ -82,6 +90,12 @@ static Game G;
 static int testMode;
 static float testT;
 static int testStep;
+// CARPOLO_TOUR="s1,s2,..." (desktop test): park at each distance along the route and take a chase
+// shot plus an elevated side shot (tour_<s>.png / tourup_<s>.png), then quit
+static float tourS[64];
+static int tourN, tourI, tourPhase;
+static bool camOverride;
+static Camera3D camOv;
 static bool testWrongLane;
 static void Autopilot(Input *in)
 {
@@ -220,7 +234,8 @@ static const char *SavePath(void)
 #endif
 }
 
-typedef struct { float best; int assist, sound, cam, quality; } SaveData;
+typedef struct { float best; int assist, sound, cam, quality; } SaveData;              // v1
+typedef struct { SaveData v1; int nSplit; float split[COURSE_MAX_CP]; } SaveData2;   // + best run's checkpoint splits
 
 static void LoadSave(void)
 {
@@ -229,27 +244,38 @@ static void LoadSave(void)
 #else
     G.bestTime = 0; G.assist = true; G.sound = true; G.camMode = CAM_CHASE; G.quality = 2;
 #endif
+    SaveData2 s2;
+    memset(&s2, 0, sizeof(s2));
     SaveData s;
     bool ok = false;
+    size_t got = 0;
 #if defined(PLATFORM_WEB)
     // localStorage holds the struct as hex
     char *hex = cp_web_load();
-    if (hex && strlen(hex) == 2 * sizeof(SaveData)) {
-        unsigned char *raw = (unsigned char *)&s;
+    size_t hl = hex ? strlen(hex) : 0;
+    if (hl == 2 * sizeof(SaveData) || hl == 2 * sizeof(SaveData2)) {
+        unsigned char *raw = (unsigned char *)&s2;
         ok = true;
-        for (size_t i = 0; i < sizeof(SaveData); i++) {
+        for (size_t i = 0; i < hl / 2; i++) {
             unsigned v;
             if (sscanf(hex + 2 * i, "%2x", &v) != 1) { ok = false; break; }
             raw[i] = (unsigned char)v;
         }
+        got = hl / 2;
     }
     free(hex);
 #else
     int size = 0;
     unsigned char *d = LoadFileData(SavePath(), &size);
-    if (d && size == (int)sizeof(SaveData)) { memcpy(&s, d, sizeof(s)); ok = true; }
+    if (d && (size == (int)sizeof(SaveData) || size == (int)sizeof(SaveData2))) { memcpy(&s2, d, size); ok = true; got = size; }
     if (d) UnloadFileData(d);
 #endif
+    s = s2.v1;
+    G.nBestSplit = 0;
+    if (ok && got == sizeof(SaveData2) && s2.nSplit > 0 && s2.nSplit <= COURSE_MAX_CP) {
+        G.nBestSplit = s2.nSplit;
+        for (int i = 0; i < s2.nSplit; i++) G.bestSplit[i] = s2.split[i];
+    }
     if (ok) {
         G.bestTime = s.best; G.assist = s.assist; G.sound = s.sound;
         G.camMode = (CamMode)(s.cam >= 0 && s.cam < CAM_COUNT ? s.cam : 0);
@@ -268,11 +294,15 @@ static void WriteSave(void)
 #if !defined(PLATFORM_ANDROID)
     if (testMode) return;
 #endif
-    SaveData s = { G.bestTime, G.assist, G.sound, (int)G.camMode, G.quality };
+    SaveData2 s;
+    memset(&s, 0, sizeof(s));
+    s.v1 = (SaveData){ G.bestTime, G.assist, G.sound, (int)G.camMode, G.quality };
+    s.nSplit = G.nBestSplit;
+    for (int i = 0; i < G.nBestSplit && i < COURSE_MAX_CP; i++) s.split[i] = G.bestSplit[i];
 #if defined(PLATFORM_WEB)
-    char hex[2 * sizeof(SaveData) + 1];
+    char hex[2 * sizeof(SaveData2) + 1];
     const unsigned char *raw = (const unsigned char *)&s;
-    for (size_t i = 0; i < sizeof(SaveData); i++) snprintf(hex + 2 * i, 3, "%02x", raw[i]);
+    for (size_t i = 0; i < sizeof(SaveData2); i++) snprintf(hex + 2 * i, 3, "%02x", raw[i]);
     cp_web_save(hex);
 #else
     SaveFileData(SavePath(), &s, sizeof(s));
@@ -392,7 +422,7 @@ static void UpdateInput(void)
         if (GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_TRIGGER) > -0.5f || IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_LEFT)) in->brake = true;
     }
 #if !defined(PLATFORM_ANDROID)
-    if (testMode && (G.state == ST_RACE || G.state == ST_COUNTDOWN)) Autopilot(in);
+    if (testMode && tourN == 0 && (G.state == ST_RACE || G.state == ST_COUNTDOWN)) Autopilot(in);
 #endif
     // edge detection stored in the "pressed" flags via previous values
     static bool prevPause, prevCam, prevHorn;
@@ -435,6 +465,14 @@ static void UpdateCamera3D(float dt)
         float k = 1.0f - expf(-dt * 7.5f);
         G.camPos = Vector3Lerp(G.camPos, wantPos, k);
         G.camTarget = Vector3Lerp(G.camTarget, wantTgt, 1.0f - expf(-dt * 12.0f));
+        // never inside a building: pull the camera towards the car (and a bit up) when a wall is between
+        Vector3 head = Vector3Add(c->pos, (Vector3){ 0, 1.4f, 0 });
+        float clear = SceneCameraClear(head, G.camPos);
+        if (clear < 1.0f) {
+            float t = fmaxf(0.18f, clear);
+            G.camPos = Vector3Lerp(head, G.camPos, t);
+            G.camPos.y += (1.0f - t) * 1.2f;
+        }
         // never below the ground
         float g = SceneGround(G.camPos.x, G.camPos.z, c->seg) + 0.6f;
         if (G.camPos.y < g) G.camPos.y = g;
@@ -472,6 +510,10 @@ static void StartRace(void)
     G.msgT = 0;
     G.countdown = 3.0f;
     G.newRecord = false;
+    G.cpNext = 0;
+    G.cpMsgT = 0;
+    G.finishFx = 0;
+    G.announced = 0;
     G.state = ST_COUNTDOWN;
     G.stateT = 0;
     G.camPos = Vector3Add(G.car.pos, (Vector3){ -cosf(G.car.yaw) * 6.3f, 2.15f, -sinf(G.car.yaw) * 6.3f });
@@ -559,6 +601,11 @@ static void UpdateRace(float dt)
             if (fabsf(c->speed) > 4.0f) Crash(1, ob.kind == 1 ? "contre un mur" : ob.kind == 0 ? "contre un arbre" : "contre un poteau");
             else c->speed = 0;
         }
+        const char *what = NULL;
+        if (!G.crashed && !c->onRoad && CourseCollide(c->pos.x, c->pos.z, 0.9f, &what)) {
+            if (fabsf(c->speed) > 4.0f) Crash(1, what);
+            else c->speed = 0;
+        }
         int hit = TrafficCollide(c, G.cactus.length, G.cactus.width);
         if (hit >= 0 && !G.crashed && G.invuln <= 0) {
             TrafficOnCrash(hit);
@@ -574,13 +621,41 @@ static void UpdateRace(float dt)
         int nm = TrafficNearMiss();
         if (nm) { G.nearMisses += nm; AudioPlay(SFX_WHOOSH); }
         if (in->horn) AudioPlay(SFX_HORN);
+        // checkpoints: split time against the best run
+        if (G.cpNext < CourseCheckpointCount() && c->s >= CourseCheckpointS(G.cpNext)) {
+            int i = G.cpNext++;
+            G.cpTime[i] = G.raceTime;
+            if (i < G.nBestSplit && G.bestSplit[i] > 0) {
+                float dlt = G.raceTime - G.bestSplit[i];
+                snprintf(G.cpMsg, sizeof(G.cpMsg), "CHECKPOINT %d   %s   %c%.2f s", i + 1, FmtTime(G.raceTime), dlt < 0 ? '-' : '+', fabsf(dlt));
+                G.cpCol = dlt < 0 ? (Color){ 70, 230, 120, 255 } : (Color){ 255, 110, 90, 255 };
+            } else {
+                snprintf(G.cpMsg, sizeof(G.cpMsg), "CHECKPOINT %d   %s", i + 1, FmtTime(G.raceTime));
+                G.cpCol = (Color){ 120, 200, 255, 255 };
+            }
+            G.cpMsgT = 3.0f;
+            AudioPlay(SFX_BEEP);
+        }
+        // finish distance announcements
+        float left = CourseFinishS() - c->s;
+        int ann = left < 200 ? 200 : left < 500 ? 500 : left < 1000 ? 1000 : 0;
+        if (ann && ann != G.announced) {
+            G.announced = ann;
+            Message(TextFormat("ARRIVÉE DANS %d m", ann), (Color){ 255, 236, 120, 255 }, 2.2f);
+        }
         // finish
-        if (c->s >= W.length - 4) {
+        if (c->s >= CourseFinishS()) {
             G.state = ST_FINISH;
             G.stateT = 0;
+            G.finishFx = 4.0f;
             AudioPlay(SFX_FINISH);
             Vibrate(120);
-            if (G.bestTime <= 0 || G.raceTime < G.bestTime) { G.bestTime = G.raceTime; G.newRecord = true; WriteSave(); }
+            if (G.bestTime <= 0 || G.raceTime < G.bestTime) {
+                G.bestTime = G.raceTime; G.newRecord = true;
+                G.nBestSplit = G.cpNext;
+                for (int i = 0; i < G.cpNext; i++) G.bestSplit[i] = G.cpTime[i];
+                WriteSave();
+            }
         }
     }
 }
@@ -662,6 +737,57 @@ static void DrawSpeedLimit(float x, float y, float r, int limit)
     Text(TextFormat("%d", limit), x, y - r * 0.5f, r * 0.95f, BLACK, 1);
 }
 
+// race progress along the bottom: checkpoints and the chequered finish flag
+static void DrawProgress(float u, int W_, int H_)
+{
+    float w = G.touchUI ? fminf(W_ - 480 * u, 300 * u) : fminf(W_ * 0.44f, 380 * u);
+    if (w < 110 * u) return;
+    float x = W_ * 0.5f - w / 2, y = H_ - (G.touchUI ? 26 : 22) * u;
+    float L = CourseFinishS();
+    DrawRectangleRounded((Rectangle){ x - 10 * u, y - 9 * u, w + 30 * u, 18 * u }, 0.6f, 8, Fade(BLACK, 0.38f));
+    DrawRectangle((int)x, (int)(y - 2 * u), (int)w, (int)(4 * u), Fade(WHITE, 0.5f));
+    float p = Clamp(G.car.s / L, 0, 1);
+    DrawRectangle((int)x, (int)(y - 2 * u), (int)(w * p), (int)(4 * u), (Color){ 63, 211, 138, 255 });
+    for (int i = 0; i < CourseCheckpointCount(); i++) {
+        float cx = x + w * CourseCheckpointS(i) / L;
+        bool passed = i < G.cpNext;
+        DrawCircleV((Vector2){ cx, y }, 4.5f * u, WHITE);
+        DrawCircleV((Vector2){ cx, y }, 3.2f * u, passed ? (Color){ 63, 211, 138, 255 } : (Color){ 28, 86, 200, 255 });
+    }
+    // finish flag
+    float fx = x + w + 3 * u, sq = 3.2f * u;
+    for (int j = 0; j < 3; j++)
+        for (int i = 0; i < 4; i++)
+            DrawRectangle((int)(fx + i * sq), (int)(y - 6 * u + j * sq), (int)sq + 1, (int)sq + 1, ((i + j) & 1) ? (Color){ 20, 20, 24, 255 } : WHITE);
+    DrawCircleV((Vector2){ x + w * p, y }, 5.5f * u, (Color){ 32, 110, 130, 255 });
+    DrawCircleLinesV((Vector2){ x + w * p, y }, 5.5f * u, WHITE);
+}
+
+// finish celebration: chequered flag waving at the top and confetti for a few seconds
+static void DrawFinishFx(float u, int W_, int H_)
+{
+    if (G.finishFx <= 0) return;
+    float t = 4.0f - G.finishFx, a = fminf(1, G.finishFx);
+    static const Color pal[6] = { { 255, 59, 48, 255 }, { 255, 210, 58, 255 }, { 52, 199, 89, 255 }, { 0, 122, 255, 255 }, { 255, 255, 255, 255 }, { 175, 82, 222, 255 } };
+    for (int i = 0; i < 140; i++) {
+        unsigned s = (unsigned)i * 2654435761u;
+        float r1 = (s & 1023) / 1023.0f, r2 = ((s >> 10) & 1023) / 1023.0f, r3 = ((s >> 20) & 1023) / 1023.0f;
+        float px = r1 * W_ + sinf(t * (1.5f + r2 * 2) + i) * 18 * u;
+        float py = fmodf(r2 * H_ * 0.6f + t * (90 + 120 * r3) * u, H_ + 20 * u) - 10 * u;
+        DrawRectanglePro((Rectangle){ px, py, 7 * u, 3.5f * u }, (Vector2){ 3.5f * u, 1.75f * u }, t * 300 * (r3 - 0.5f) + i * 37, Fade(pal[i % 6], a));
+    }
+    // waving chequered flag
+    int cols = 10, rows = 6;
+    float sq = 9 * u, fx = W_ * 0.5f - cols * sq / 2, fy = 64 * u;
+    for (int i = 0; i < cols; i++) {
+        float off = sinf(t * 7.0f - i * 0.7f) * 4 * u * (i / (float)cols);
+        for (int j = 0; j < rows; j++)
+            DrawRectangle((int)(fx + i * sq), (int)(fy + j * sq + off), (int)sq + 1, (int)sq + 1, Fade(((i + j) & 1) ? (Color){ 20, 20, 24, 255 } : WHITE, a));
+    }
+    DrawRectangle((int)(fx - 3 * u), (int)(fy - 6 * u), (int)(3 * u), (int)(rows * sq + 40 * u), Fade((Color){ 200, 200, 206, 255 }, a));
+    if (G.stateT < 2.0f) Text("ARRIVÉE !", W_ * 0.5f, H_ * 0.36f, 54 * u, Fade((Color){ 255, 236, 120, 255 }, a), 1);
+}
+
 static void DrawHUD(void)
 {
     float u = U();
@@ -708,6 +834,13 @@ static void DrawHUD(void)
         Text(t1, W_ * 0.5f, r.y + 6 * u, 24 * u, Fade((Color){ 30, 30, 40, 255 }, a), 1);
         if (t2[0]) Text(t2, W_ * 0.5f, r.y + 32 * u, 12 * u, Fade((Color){ 190, 40, 40, 255 }, a), 1);
     }
+    // checkpoint split
+    if (G.cpMsgT > 0) {
+        float a = fminf(1, G.cpMsgT * 2);
+        Rectangle r = { W_ * 0.5f - 170 * u, H_ * 0.27f - 6 * u, 340 * u, 32 * u };
+        DrawRectangleRounded(r, 0.4f, 8, Fade((Color){ 20, 30, 60, 255 }, 0.55f * a));
+        Text(G.cpMsg, W_ * 0.5f, H_ * 0.27f, 19 * u, Fade(G.cpCol, a), 1);
+    }
     // messages
     if (G.msgT > 0) {
         float a = fminf(1, G.msgT * 2);
@@ -737,11 +870,13 @@ static void DrawHUD(void)
         DrawCircleBtn((Vector2){ W_ - 175 * u, H_ - 190 * u }, 24 * u, false, (Color){ 150, 110, 230, 255 }, 3);
     } else if (racing && G.raceTime < 10) {
 #if defined(PLATFORM_WEB)
-        Text("Flèches ou ZQSD : conduire   H : klaxon   C : caméra   P : pause", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
+        Text("Flèches ou ZQSD : conduire   H : klaxon   C : caméra   P : pause", W_ * 0.5f, H_ - 52 * u, 13 * u, WHITE, 1);
 #else
-        Text("Flèches : conduire   H : klaxon   C : caméra   P : pause   F11 : plein écran", W_ * 0.5f, H_ - 26 * u, 13 * u, WHITE, 1);
+        Text("Flèches : conduire   H : klaxon   C : caméra   P : pause   F11 : plein écran", W_ * 0.5f, H_ - 52 * u, 13 * u, WHITE, 1);
 #endif
     }
+    if (racing || G.state == ST_FINISH) DrawProgress(u, W_, H_);
+    DrawFinishFx(u, W_, H_);
 }
 
 // ------------------------------------------------------------------ screens
@@ -823,18 +958,23 @@ static void DrawResults(void)
 // ------------------------------------------------------------------ main loop
 static void Draw3D(void)
 {
+    SceneGather(G.cam);
     if (RenderShadowsEnabled()) {
         Vector3 f = { cosf(G.car.yaw), 0, sinf(G.car.yaw) };
         Vector3 centre = Vector3Add(G.car.pos, Vector3Scale(f, 70.0f));
         RenderShadowBegin(centre);
         SceneDrawShadow(centre, RenderShadowRadius());
+        CourseDrawShadow(centre, RenderShadowRadius());
         TrafficDraw(G.cam);
         if (G.cactusReady) DrawCarModel(&G.cactus, CarMatrix(&G.car, true), G.car.wheelSpin, G.car.steerAngle, false);
         RenderShadowEnd();
     }
+    // near plane: close for the bonnet view, farther otherwise (depth precision for far walls)
+    rlSetClipPlanes(G.camMode == CAM_HOOD && G.state != ST_TITLE ? 0.2 : 0.5, RENDER_FAR);
     BeginMode3D(G.cam);
     RenderSetFrame(G.cam, SceneQuality() == 2 ? 1.0f / 9000.0f : SceneQuality() == 1 ? 1.0f / 7000.0f : 1.0f / 5000.0f);
     SceneDraw(G.cam);
+    CourseDraw(G.cam);
     SignsDraw(G.cam);
     TrafficDraw(G.cam);
     bool blink = G.invuln > 0 && ((int)(G.invuln * 8) % 2 == 0);
@@ -864,6 +1004,10 @@ int GameRun(void)
     testMode = cp_web_flag("test") != 0;
 #elif !defined(PLATFORM_ANDROID)
     testMode = getenv("CARPOLO_TEST") != NULL;
+    if (testMode && getenv("CARPOLO_TOUR")) {
+        const char *p = getenv("CARPOLO_TOUR");
+        while (*p && tourN < 64) { tourS[tourN++] = (float)atof(p); while (*p && *p != ',') p++; if (*p == ',') p++; }
+    }
 #endif
     unsigned int flags = FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE;
 #if defined(PLATFORM_ANDROID) || defined(PLATFORM_WEB)
@@ -893,7 +1037,7 @@ int GameRun(void)
 #endif
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
-    rlSetClipPlanes(0.25, 30000.0);     // the horizon is 20 km away (raylib's default far plane is 1 km)
+    rlSetClipPlanes(RENDER_NEAR, RENDER_FAR);     // the horizon is 20 km away (raylib's default far plane is 1 km)
     // loading screen
     BeginDrawing();
     ClearBackground((Color){ 74, 128, 196, 255 });
@@ -929,6 +1073,7 @@ int GameRun(void)
     }
     RenderSetShadows(G.quality == 2);
     SignsInit(G.font, G.fontOk);
+    CourseInit(G.font, G.fontOk);
     G.cactus = BuildCactusModel();
     G.cactusReady = true;
     TrafficInit();
@@ -957,6 +1102,7 @@ int GameRun(void)
     TrafficShutdown();
     UnloadCarModel(&G.cactus);
     SignsShutdown();
+    CourseShutdown();
     SceneShutdown();
     RenderShutdown();
     WorldUnload();
@@ -1015,6 +1161,8 @@ static void Frame(void)
             if (steps >= 12) acc = 0;
             G.stateT += dt;
             if (G.msgT > 0) G.msgT -= dt;
+            if (G.cpMsgT > 0) G.cpMsgT -= dt;
+            if (G.finishFx > 0) G.finishFx -= dt;
             if (G.goT > 0) G.goT -= dt;
             if (G.bannerT > 0) G.bannerT -= dt;
             // zones
@@ -1032,7 +1180,25 @@ static void Frame(void)
 #if !defined(PLATFORM_ANDROID)
         bool shot = false;
         const char *shotName = NULL;
-        if (testMode) {
+        if (testMode && tourN > 0) {
+            testT += dt;
+            static char nm[64];
+            if (G.state == ST_TITLE) { StartRace(); G.countdown = 0.01f; testT = 0; tourPhase = 0; }
+            else if (tourI >= tourN) { TraceLog(LOG_INFO, "TEST: done, tour of %d places", tourN); G.quit = true; return; }
+            else {
+                float s = tourS[tourI];
+                if (tourPhase == 0) {
+                    CarReset(&G.car, s, LaneCenterD(RouteIndexAtS(s), 1, 0)); G.car.speed = 0; TrafficReset(s);
+                    G.camPos = Vector3Add(G.car.pos, (Vector3){ -cosf(G.car.yaw) * 6.3f, 2.15f, -sinf(G.car.yaw) * 6.3f });
+                    camOverride = false; tourPhase = 1; testT = 0;
+                } else if (tourPhase == 1 && testT > 4.0f) { snprintf(nm, sizeof(nm), "tour_%05d.png", (int)s); shot = true; shotName = nm; tourPhase = 2; testT = 0; }
+                else if (tourPhase == 2) {
+                    Vector3 f = { cosf(G.car.yaw), 0, sinf(G.car.yaw) }, r = { -f.z, 0, f.x };
+                    camOv = (Camera3D){ Vector3Add(G.car.pos, (Vector3){ r.x * 22 - f.x * 18, 16, r.z * 22 - f.z * 18 }), Vector3Add(G.car.pos, Vector3Scale(f, 20)), { 0, 1, 0 }, 60, CAMERA_PERSPECTIVE };
+                    camOverride = true; tourPhase = 3; testT = 0;
+                } else if (tourPhase == 3 && testT > 0.3f) { snprintf(nm, sizeof(nm), "tourup_%05d.png", (int)s); shot = true; shotName = nm; tourPhase = 0; tourI++; }
+            }
+        } else if (testMode) {
             testT += dt;
             static const float tp[] = { 4640, 6440, 2560, 9050, 30 };
             switch (testStep) {
@@ -1068,6 +1234,9 @@ static void Frame(void)
         }
 #endif
         UpdateCamera3D(dt);
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+        if (camOverride) G.cam = camOv;
+#endif
 
         BeginDrawing();
         ClearBackground(FogColor());

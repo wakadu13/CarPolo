@@ -522,6 +522,47 @@ static unsigned char *buildAlphaMips(const Img *im, int *mipCount, size_t *total
     return out;
 }
 
+// Alpha-tested texture from an RGBA image: colour bled into the transparent texels (no dark fringes
+// when filtering), mipmaps that keep the alpha-test coverage. The image is modified.
+Texture2D TexLoadCutout(Image im)
+{
+    if (im.format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    unsigned char *px = im.data;
+    int w = im.width, h = im.height;
+    unsigned char *tmp = malloc((size_t)w * h * 4);
+    for (int pass = 0; pass < 6; pass++) {
+        memcpy(tmp, px, (size_t)w * h * 4);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                unsigned char *p = px + ((size_t)y * w + x) * 4;
+                if (tmp[((size_t)y * w + x) * 4 + 3] >= 128 || (pass > 0 && p[0] | p[1] | p[2])) continue;
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+                    int xx = x + i, yy = y + j;
+                    if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+                    const unsigned char *q = tmp + ((size_t)yy * w + xx) * 4;
+                    if (q[3] >= 128 || (q[0] | q[1] | q[2])) { r += q[0]; g += q[1]; b += q[2]; n++; }
+                }
+                if (n) { p[0] = (unsigned char)(r / n); p[1] = (unsigned char)(g / n); p[2] = (unsigned char)(b / n); }
+            }
+        }
+    }
+    free(tmp);
+    Img src = { px, w, h };
+    int mips; size_t bytes;
+    unsigned char *data = buildAlphaMips(&src, &mips, &bytes);
+    Image ri = { data, w, h, mips, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+    Texture2D t = LoadTextureFromImage(ri);
+#if !defined(PLATFORM_ANDROID) && !defined(PLATFORM_WEB)
+    SetTextureFilter(t, TEXTURE_FILTER_ANISOTROPIC_8X);
+#else
+    SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+#endif
+    SetTextureWrap(t, TEXTURE_WRAP_CLAMP);
+    free(data);
+    return t;
+}
+
 // ------------------------------------------------------------------ public
 static Img images[TEX_COUNT];
 static bool keepImages;

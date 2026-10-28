@@ -7,7 +7,7 @@
 
 #define CHUNK_LEN 100.0f
 
-typedef struct { float x, z, r; unsigned char kind; } Obstacle; // kind: 0 tree, 1 building, 2 pole, 3 barrier
+typedef struct { float x, z, r; unsigned char kind; int bld; } Obstacle; // kind: 0 tree, 1 building, 2 pole, 3 barrier; bld = building index or -1
 
 void  SceneInit(const char *treesBinPath, const char *treesPngPath);   // after WorldLoad + RenderInit (model pack paths)
 void  SceneShutdown(void);
@@ -15,7 +15,9 @@ void  SceneShutdown(void);
 // screen); -1: background thread (or a short slice per frame on platforms without threads).
 void  SceneUpdate(Vector3 focus, float budgetMs);
 float SceneProgress(Vector3 focus);            // 0..1: fraction of wanted chunks that are built
+void  SceneGather(Camera3D cam);              // once per frame before the shadow pass: picks the pack models drawn as meshes
 void  SceneDraw(Camera3D cam);
+int   SceneNearModels(void);                  // pack models drawn as meshes this frame
 void  SceneDrawShadow(Vector3 centre, float radius);   // casters for the sun shadow map (depth shaders)
 
 // Terrain height with the road corridor flattened (same function used to build the meshes)
@@ -27,5 +29,9 @@ void  SceneStats(int *loaded, long *verts, long *bytes);   // bytes = GPU vertex
 void  SceneSetQuality(int q);                 // 0 light, 1 normal, 2 high (call before SceneInit for the texture size)
 int   SceneQuality(void);
 bool  SceneCollide(float x, float z, float radius, Obstacle *hit);
+// Chase camera: fraction 0..1 of the segment car -> camera that is free of buildings (1 = no wall)
+float SceneCameraClear(Vector3 from, Vector3 to);
+// Ground height under a building footprint (follows the road cuttings/embankments near the route)
+float SceneBuildingFloor(int building);
 
 #endif

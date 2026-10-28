@@ -27,6 +27,16 @@ elseif(CARPOLO_FETCH_RAYLIB)
     GIT_TAG 5.5
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(raylib)
+  if(ANDROID)
+    # raylib 5.5 asks EGL for a 16-bit depth buffer: far buildings, windows and road markings then
+    # flicker (z-fighting). Every GLES2 GPU in use offers 24 bits.
+    set(_rc ${raylib_SOURCE_DIR}/src/platforms/rcore_android.c)
+    file(READ ${_rc} _rcs)
+    string(REPLACE "EGL_DEPTH_SIZE, 16," "EGL_DEPTH_SIZE, 24," _rcs2 "${_rcs}")
+    if(NOT _rcs2 STREQUAL _rcs)
+      file(WRITE ${_rc} "${_rcs2}")
+    endif()
+  endif()
 endif()
 
 file(GLOB CARPOLO_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
